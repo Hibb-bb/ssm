@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 core_requires = [
-    "torch~=1.11",
+    "torch",
     "tensorboardX",
     "torchdiffeq @ git+https://github.com/rtqichen/torchdiffeq",
     "tqdm",
@@ -10,7 +10,7 @@ core_requires = [
 exp_requires = [
     "matplotlib",
     "seaborn",
-    "torchvision~=0.14",
+    "torchvision",
     "scikit-learn",
     "pygame",
     "pymunk~=5.6.0",

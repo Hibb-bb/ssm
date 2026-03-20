@@ -11,7 +11,7 @@ def get_model(config):
         from .mocap import build_model
     elif config["dataset"] == "bouncing_ball":
         from .bouncing_ball import build_model
-    elif config["dataset"] == "damped_pendulum":
+    elif config["dataset"] in {"damped_pendulum", "sine"}:
         from .pendulum import build_model
     elif config["dataset"] in {"box", "pong"}:
         from .pymunk import build_model
@@ -28,6 +28,7 @@ def get_dataset(config: Dict):
         MocapDataset,
         BouncingBallDataset,
         DampedPendulumDataset,
+        SineWaveDataset,
         ClimateDataset,
     )
 
@@ -109,6 +110,35 @@ def get_dataset(config: Dict):
             ctx_len=50,
             pred_len=100,
             missing_p=config["train_missing_p"],
+        )
+    elif dataset_name == "sine":
+        ctx_len = config.get("ctx_len", 100)
+        pred_len = config.get("pred_len", 200)
+        dt = config.get("dt", 0.1)
+
+        train_dataset = SineWaveDataset(
+            num_series=config.get("train_num_series", 1024),
+            dt=dt,
+            ctx_len=ctx_len,
+            pred_len=pred_len,
+            missing_p=config["train_missing_p"],
+            seed=config.get("sine_train_seed", 0),
+        )
+        val_dataset = SineWaveDataset(
+            num_series=config.get("val_num_series", 256),
+            dt=dt,
+            ctx_len=ctx_len,
+            pred_len=pred_len,
+            missing_p=config["train_missing_p"],
+            seed=config.get("sine_val_seed", 1),
+        )
+        test_dataset = SineWaveDataset(
+            num_series=config.get("test_num_series", 256),
+            dt=dt,
+            ctx_len=ctx_len,
+            pred_len=pred_len,
+            missing_p=config["train_missing_p"],
+            seed=config.get("sine_test_seed", 2),
         )
     elif dataset_name == "climate":
         csv_path = DATA_ROOT / "climate/climate-data-preproc.csv"

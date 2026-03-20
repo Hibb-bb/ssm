@@ -133,3 +133,12 @@ This repo contains parts of code based on the following repos.
 | [cagatayyildiz/ODE2VAE](https://github.com/cagatayyildiz/ODE2VAE)  | Çağatay Yıldız  | NA |
 | [mannyray/KalmanFilter](https://github.com/mannyray/KalmanFilter) | @mannyray  | [MIT License](https://github.com/mannyray/KalmanFilter/blob/master/LICENSE) |
 | [simonkamronn/kvae](https://github.com/simonkamronn/kvae) | Simon Kamronn | [MIT License](https://github.com/simonkamronn/kvae/blob/master/LICENSE)
+
+
+
+
+salloc --account=p32234 --job-name=ok --nodes=1 --partition=gengpu --gres=gpu:a100:1 --ntasks-per-node=1 --cpus-per-task=8 --mem=40G --time=01:00:00
+
+https://github.com/radarFudan/Curse-of-memory.git
+
+srun --jobid=3205048 --pty bash -l

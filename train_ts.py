@@ -46,11 +46,12 @@ def train_step(train_batch, model, optimizer, reg_scheduler, step, device, confi
         optimizer.zero_grad()
     if step <= config.get("ssm_params_warmup_steps", 0):
         optimizer.param_groups[0]["lr"] = ctkf_lr
-    print(
-        f"Step {step}: Loss={loss.item():.4f},"
-        f" Grad Norm: {total_grad_norm.item():.2f},"
-        f" Reg-Coeff: {reg_scheduler.val:.2f}"
-    )
+    if step % 100 == 0:
+        print(
+            f"Step {step}: Loss={loss.item():.4f},"
+            f" Grad Norm: {total_grad_norm.item():.2f},"
+            f" Reg-Coeff: {reg_scheduler.val:.2f}"
+        )
     return dict(
         loss=loss.item(), cond_ll=cond_ll.mean(0).item(), reg=reg.mean(0).item()
     )
@@ -198,6 +199,59 @@ def main():
                 writer.add_scalar(m, v, global_step=step)
             folder = os.path.join(log_dir, "plots", f"step{step}")
             os.makedirs(folder, exist_ok=True)
+
+            # Visualize on a few training series.
+            num_train_plots = config.get("num_train_plots", 0)
+            train_plot_count = 0
+            if num_train_plots and num_train_plots > 0:
+                for train_batch in train_loader:
+                    past_target = train_batch["past_target"].to(device)
+                    B, T, D = past_target.shape
+                    mask = train_batch["past_mask"].to(device)
+                    future_target = train_batch["future_target"].to(device)
+                    past_times = train_batch["past_times"].to(device)
+                    future_times = train_batch["future_times"].to(device)
+                    if past_times[0] > 0:
+                        past_times, past_target, mask = prepend_time_zero(
+                            past_times, past_target, mask
+                        )
+
+                    predict_result = model.forecast(
+                        past_target,
+                        mask,
+                        past_times.view(-1),
+                        future_times.view(-1),
+                        num_samples=config["num_forecast"],
+                    )
+                    reconstruction = predict_result["reconstruction"]
+                    forecast = predict_result["forecast"]
+                    for j in range(B):
+                        masked_past_target = past_target.clone()
+                        masked_past_target[mask == 0.0] = float("nan")
+                        fig = show_time_series_forecast(
+                            (12, 5),
+                            torch2numpy(past_times),
+                            torch2numpy(future_times),
+                            torch2numpy(torch.cat([past_target, future_target], 1))[
+                                j
+                            ],
+                            torch2numpy(
+                                torch.cat([masked_past_target, future_target], 1)
+                            )[j],
+                            torch2numpy(reconstruction)[:, j],
+                            torch2numpy(forecast)[:, j],
+                            file_path=os.path.join(
+                                folder, f"train_series_{train_plot_count}.png"
+                            ),
+                        )
+                        plt.close(fig)
+                        train_plot_count += 1
+                        if train_plot_count >= num_train_plots:
+                            break
+                    if train_plot_count >= num_train_plots:
+                        break
+
+            # Visualize on a few validation series.
             plot_count = 0
             while plot_count < config["num_plots"]:
                 for test_batch in val_loader:
@@ -233,7 +287,9 @@ def main():
                             )[j],
                             torch2numpy(reconstruction)[:, j],
                             torch2numpy(forecast)[:, j],
-                            file_path=os.path.join(folder, f"series_{plot_count}.png"),
+                            file_path=os.path.join(
+                                folder, f"val_series_{plot_count}.png"
+                            ),
                         )
                         plt.close(fig)
                         plot_count += 1
