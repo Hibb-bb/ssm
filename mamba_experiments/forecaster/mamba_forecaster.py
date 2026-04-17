@@ -75,14 +75,22 @@ class MambaForecaster(pl.LightningModule):
         preds = self.output_proj(x).squeeze(-1)
         return preds
 
+    def _mask_prediction_inputs(self, values, timestamps):
+        """Zero out values in the prediction region to prevent data leakage.
+        The model must predict future values using only context (t < history)."""
+        pred_mask = timestamps >= self.history
+        masked = values.clone()
+        masked[pred_mask] = 0.0
+        return masked, pred_mask
+
     def _compute_loss(self, batch, prefix):
         values = batch["values"]
         timestamps = batch["timestamps"]
         delta_t = batch["delta_t"]
 
-        preds = self.forward(values, delta_t=delta_t)
+        masked_values, pred_mask = self._mask_prediction_inputs(values, timestamps)
+        preds = self.forward(masked_values, delta_t=delta_t)
 
-        pred_mask = timestamps >= self.history
         if pred_mask.sum() == 0:
             return torch.tensor(0.0, device=values.device, requires_grad=True)
 
@@ -107,9 +115,8 @@ class MambaForecaster(pl.LightningModule):
         timestamps = batch["timestamps"]
         delta_t = batch["delta_t"]
 
-        preds = self.forward(values, delta_t=delta_t)
-
-        pred_mask = timestamps >= self.history
+        masked_values, pred_mask = self._mask_prediction_inputs(values, timestamps)
+        preds = self.forward(masked_values, delta_t=delta_t)
         B = values.shape[0]
         for i in range(B):
             m = pred_mask[i]

@@ -21,7 +21,7 @@ export CUDA_VISIBLE_DEVICES=0
 CONDA_ENV=/projects/b1094/StarEmbed/pythonenvs/moirai_train
 DATA_ROOT=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/tpatchgnn_data_nobs160
 LOG_BASE=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mamba_sinusoidal_nobs160
-CODE_DIR=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_model
+CODE_DIR=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_model/ssm/mamba_experiments
 
 VARIANTS=("vanilla_mamba" "mamba_true_dt" "mamba_hybrid_dt")
 DT_MODES=("learned" "replace" "additive")
@@ -57,7 +57,7 @@ mkdir -p $OUTPUT_DIR
 
 cd $CODE_DIR
 
-srun ${CONDA_ENV}/bin/python -m mamba_forecaster.train \
+srun ${CONDA_ENV}/bin/python -m forecaster.train \
     --dt_mode $DT_MODE \
     --data_root $DATA_ROOT \
     --irregularity $IRREG \

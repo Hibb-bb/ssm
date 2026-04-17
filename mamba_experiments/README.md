@@ -8,8 +8,10 @@ sinusoidal forecasting and time-series classification experiments.
 ```
 experiments/
 ├── forecaster/              # Mamba sinusoidal forecasting (3 dt variants)
-│   ├── mamba_block.py         Pure PyTorch Mamba block + MambaIrregularBlock
+│   ├── __init__.py            Package marker (so `python -m forecaster.train` works)
+│   ├── mamba_block.py         Mamba block; CUDA selective scan w/ PyTorch fallback
 │   ├── mamba_forecaster.py    Lightning module (learned / replace / additive dt)
+│   │                          Masks prediction-region inputs to prevent leakage
 │   ├── sinusoidal_datamodule.py   Lightning DataModule for HF Arrow datasets
 │   ├── train.py               CLI training entrypoint (argparse)
 │   ├── plot_mamba_comparison.py   Comparison plots sorted by frequency
@@ -33,6 +35,9 @@ experiments/
 │
 ├── scripts/                 # SLURM job scripts
 │   ├── run_mamba_sinusoidal.sh    Array job: 3 variants × 4 irreg × 5 seeds = 60
+│   ├── run_mamba_cuda_fixed.sh    Array job: 3 variants × 5 seeds, high_irreg
+│   │                              (uses CUDA kernel + leakage fix; canonical)
+│   ├── run_mamba_fixed_comparison.sh   Plots predictions for the fixed runs
 │   └── test_mamba_cuda.sh         Validate CUDA kernel installation
 │
 └── environment/             # Conda environment setup
@@ -79,6 +84,23 @@ python experiments/dataset_generation/convert_to_moirai.py \
 
 ### 3. Run Mamba sinusoidal forecasting
 
+**Canonical (CUDA kernel + leakage fix), high_irreg only, 5 seeds:**
+
+```bash
+sbatch experiments/scripts/run_mamba_cuda_fixed.sh
+```
+
+This trains 15 models (3 variants × 5 seeds) on `high_irreg`. Each
+training step zeros out values where `t >= history` before the forward
+pass so the model cannot see ground-truth future values. Plot the
+resulting predictions with:
+
+```bash
+sbatch experiments/scripts/run_mamba_fixed_comparison.sh
+```
+
+**Full sweep (all 4 irregularity levels):**
+
 ```bash
 sbatch --array=1-60 experiments/scripts/run_mamba_sinusoidal.sh
 ```
@@ -90,6 +112,11 @@ This trains 60 models (3 variants × 4 irregularity levels × 5 seeds):
 | `vanilla_mamba` | `learned` | Standard Mamba, delta fully learned |
 | `mamba_true_dt` | `replace` | Delta = true inter-observation time gap |
 | `mamba_hybrid_dt` | `additive` | Delta = softplus(learned + true dt) |
+
+Both scripts `cd` into `mamba_experiments/` and invoke
+`python -m forecaster.train`. They use the `mamba` conda env, which
+auto-dispatches to the CUDA selective-scan kernel when available
+(falls back to a pure-PyTorch loop on CPU or if `mamba_ssm` is missing).
 
 ### 4. Validate CUDA kernels
 
@@ -123,13 +150,13 @@ Five controlled variants testing different parameterization strategies:
 
 ## Dependencies
 
-The `mamba` conda environment (`pythonenvs/mamba/`) or `moirai_train`
-environment depending on the experiment:
-
-- **Mamba forecasting** (`run_mamba_sinusoidal.sh`): uses `moirai_train` env
-  (pure PyTorch selective scan, no CUDA kernels needed)
+- **Mamba forecasting** (`run_mamba_cuda_fixed.sh`,
+  `run_mamba_fixed_comparison.sh`, `run_mamba_sinusoidal.sh`):
+  uses the `mamba` conda env (`pythonenvs/mamba/`) — `mamba_block.py`
+  auto-dispatches to the CUDA `selective_scan_fn` when available and
+  otherwise falls back to the pure-PyTorch reference implementation.
 - **CUDA kernel tests** (`test_mamba_cuda.sh`): uses `mamba` env
-  (requires compiled `mamba_ssm` with CUDA kernels)
+  (requires compiled `mamba_ssm` with CUDA kernels).
 
 ## Parent Directory
 

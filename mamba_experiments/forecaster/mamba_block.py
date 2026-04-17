@@ -1,10 +1,9 @@
 """
-Self-contained Mamba block with pure PyTorch selective scan.
-No CUDA/Triton dependencies — uses reference sequential scan.
+Mamba block with CUDA-accelerated selective scan (falls back to pure PyTorch).
 
 Provides:
-  MambaBlock         — standard Mamba (fully-learned delta)
-  MambaIrregularBlock — accepts external delta_t for irregular time series
+  MambaBlock         - standard Mamba (fully-learned delta)
+  MambaIrregularBlock - accepts external delta_t for irregular time series
                         mode="replace": use true dt as delta (Option A)
                         mode="additive": delta = learned + true dt (Option C)
 """
@@ -16,22 +15,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
+try:
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+    HAS_CUDA_SCAN = True
+except ImportError:
+    HAS_CUDA_SCAN = False
 
-def selective_scan_ref(u, delta, A, B, C, D=None, z=None):
-    """
-    Pure PyTorch selective scan, optimized to minimize per-step overhead.
 
-    Args:
-        u:     (B, D, L)  input
-        delta: (B, D, L)  discretization step (already positive)
-        A:     (D, N)     state matrix (negative real)
-        B:     (B, N, L)  input-dependent B
-        C:     (B, N, L)  input-dependent C
-        D:     (D,)       skip connection
-        z:     (B, D, L)  gate (SiLU-gated output)
-    Returns:
-        out:   (B, D, L)
-    """
+def _selective_scan_pytorch(u, delta, A, B, C, D=None, z=None):
+    """Pure PyTorch selective scan (sequential for-loop fallback)."""
     dtype_in = u.dtype
     u = u.float()
     delta = delta.float()
@@ -56,6 +48,13 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None):
     if z is not None:
         out = out * F.silu(z)
     return out.to(dtype=dtype_in)
+
+
+def selective_scan(u, delta, A, B, C, D=None, z=None):
+    """Dispatch to CUDA kernel if available, otherwise pure PyTorch."""
+    if HAS_CUDA_SCAN and u.is_cuda:
+        return selective_scan_fn(u, delta, A, B, C, D=D, z=z, delta_softplus=False)
+    return _selective_scan_pytorch(u, delta, A, B, C, D=D, z=z)
 
 
 class MambaBlock(nn.Module):
@@ -134,7 +133,6 @@ class MambaBlock(nn.Module):
 
         self.norm = nn.LayerNorm(self.d_model)
 
-
     def _compute_delta(self, x, seqlen):
         """Standard: project from input, add bias, softplus."""
         x_dbl = self.x_proj(rearrange(x, 'b d l -> (b l) d'))
@@ -149,13 +147,6 @@ class MambaBlock(nn.Module):
         return dt, B, C
 
     def forward(self, hidden_states, delta_t=None):
-        """
-        Args:
-            hidden_states: (B, L, D)
-            delta_t: ignored in base MambaBlock
-        Returns:
-            (B, L, D)
-        """
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
@@ -176,7 +167,7 @@ class MambaBlock(nn.Module):
 
         dt, B, C = self._compute_delta(x, seqlen)
 
-        y = selective_scan_ref(x, dt, A, B, C, self.D.float(), z=z)
+        y = selective_scan(x, dt, A, B, C, self.D.float(), z=z)
         y = rearrange(y, 'b d l -> b l d')
         out = self.out_proj(y)
         return out + residual
@@ -187,9 +178,7 @@ class MambaIrregularBlock(MambaBlock):
     Mamba block that injects true time gaps into the SSM discretization.
 
     mode="replace":  delta = broadcast(delta_t_real) to all d_inner channels
-                     (Option A — pure physics, no learned dt)
     mode="additive": delta = softplus(learned_dt + broadcast(delta_t_real))
-                     (Option C — learned correction on top of true physics)
     """
 
     def __init__(self, *args, dt_mode: str = 'replace', **kwargs):
@@ -198,11 +187,6 @@ class MambaIrregularBlock(MambaBlock):
         self.dt_mode = dt_mode
 
     def forward(self, hidden_states, delta_t=None):
-        """
-        Args:
-            hidden_states: (B, L, D)
-            delta_t:       (B, L)  true time gaps between observations
-        """
         assert delta_t is not None, 'MambaIrregularBlock requires delta_t'
 
         residual = hidden_states
@@ -242,7 +226,7 @@ class MambaIrregularBlock(MambaBlock):
             dt_learned = dt_learned + self.dt_proj.bias[:, None]
             dt = F.softplus(dt_learned + dt_real)
 
-        y = selective_scan_ref(x, dt, A, B, C, self.D.float(), z=z)
+        y = selective_scan(x, dt, A, B, C, self.D.float(), z=z)
         y = rearrange(y, 'b d l -> b l d')
         out = self.out_proj(y)
         return out + residual

@@ -3,8 +3,8 @@ Plot comparison of Mamba variants on sinusoidal test data,
 sorted by ground-truth frequency — analogous to the MOIRAI
 comparison_sortby_frequency.png plot.
 
-Usage (needs GPU):
-    python -m mamba_forecaster.plot_mamba_comparison
+Usage (needs GPU; run from `mamba_experiments/`):
+    python -m forecaster.plot_mamba_comparison
 
 Can also run on CPU with --cpu flag.
 """
@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import datasets
-from mamba_forecaster.mamba_forecaster import MambaForecaster
+from forecaster.mamba_forecaster import MambaForecaster
 
 
 def load_test_data(data_root, irregularity):
@@ -48,10 +48,13 @@ def run_mamba_inference(ckpt_path, samples, history, device):
         timestamps = torch.stack([torch.from_numpy(s["timestamps"]) for s in batch_samples]).to(device)
         delta_t = torch.stack([torch.from_numpy(s["delta_t"]) for s in batch_samples]).to(device)
 
-        with torch.no_grad():
-            preds = model(values, delta_t=delta_t)
-
         pred_mask = timestamps >= history
+
+        masked_values = values.clone()
+        masked_values[pred_mask] = 0.0
+
+        with torch.no_grad():
+            preds = model(masked_values, delta_t=delta_t)
         B = values.shape[0]
         for i in range(B):
             m = pred_mask[i]
