@@ -1,0 +1,12 @@
+# Regeneratable synthetic data (see generate_longgap_multisin.py)
+data/
+
+# Vendored RoMAE clone (install via SETUP.md instead of committing)
+mv_vs_romae/romae_forecaster/_romae_repo/
+mv_vs_romae/romae_forecaster/_romae/
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
