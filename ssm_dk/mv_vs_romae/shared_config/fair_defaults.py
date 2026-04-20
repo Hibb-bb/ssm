@@ -61,7 +61,10 @@ def add_fair_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--t_max", type=float, default=T_MAX)
     parser.add_argument("--n_vars", type=int, default=N_VARS)
 
-    parser.add_argument("--precision", type=str, default="bf16-mixed")
+    # fp32 everywhere: matches the canonical univariate Mamba baseline
+    # (MambaIrregularBlock forces dt to fp32 internally, which trips the CUDA
+    # selective-scan kernel's dtype-match check under bf16-mixed autocast).
+    parser.add_argument("--precision", type=str, default="32-true")
     return parser
 
 
