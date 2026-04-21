@@ -10,3 +10,19 @@ data/mocap/
 /plots/
 /checkpoints/
 *.egg-info
+
+# imts_benchmark synthetic datasets: regenerable via
+# ssm_dk/generate_longgap_multisin.py (see imts_benchmark_plan.md).
+ssm_dk/data/
+ssm_dk/data_history7_backup/
+
+# RoMAE library: clone + pip install -e separately per BUILD_REPORT.
+# (Matches the pre-rename convention: _romae_repo was not committed.)
+ssm_dk/imts_benchmark/romae_forecaster/_romae_repo/
+
+# PyTorch Lightning / SLURM run artifacts
+lightning_logs/
+*.ckpt
+*.pth
+slurm-*.out
+slurm-*.err

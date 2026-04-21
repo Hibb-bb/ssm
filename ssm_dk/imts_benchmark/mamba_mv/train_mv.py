@@ -1,12 +1,11 @@
-"""Train the RoMAE forecaster on the sparse-flat synthetic data.
-
-Identical optimizer / scheduler / early-stopping / batch-size / precision as
-mamba_mv/train_mv.py via shared_config.fair_defaults. Only the model-specific
-knobs (encoder/decoder dims) differ.
+"""Train the multivariate Mamba forecaster on the sparse-flat synthetic data.
 
 Usage:
-    python -m mv_vs_romae.romae_forecaster.train_romae \
-        --regime sparse_dependent --seed 1 --output_dir /path/to/output
+    python -m imts_benchmark.mamba_mv.train_mv \
+        --dt_mode replace \
+        --regime sparse_dependent \
+        --seed 1 \
+        --output_dir /path/to/output
 """
 
 from __future__ import annotations
@@ -27,44 +26,57 @@ from pytorch_lightning.callbacks import (
 )
 
 _THIS_DIR = Path(__file__).resolve().parent
-_SSM_DK = _THIS_DIR.parents[1]
+_SSM_DK = _THIS_DIR.parents[1]  # .../ssm_dk
 if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
-from mv_vs_romae.shared_config.fair_defaults import add_fair_args
-from mv_vs_romae.shared_data.multivariate_datamodule import (
+from imts_benchmark.shared_config.fair_defaults import add_fair_args
+from imts_benchmark.shared_data.multivariate_datamodule import (
     MultivariateSinusoidalDataModule,
 )
-from mv_vs_romae.romae_forecaster.romae_forecaster import RoMAEForecaster
+from imts_benchmark.mamba_mv.multivariate_forecaster import MultivariateMambaForecaster
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RoMAE forecasting (transformer baseline)")
+    parser = argparse.ArgumentParser(description="Multivariate Mamba forecasting (paper arch)")
     add_fair_args(parser)
 
-    parser.add_argument("--enc_d_model", type=int, default=288)
-    parser.add_argument("--enc_nhead", type=int, default=6)
-    parser.add_argument("--enc_depth", type=int, default=7)
-    parser.add_argument("--dec_d_model", type=int, default=180)
-    parser.add_argument("--dec_nhead", type=int, default=3)
-    parser.add_argument("--dec_depth", type=int, default=2)
-    parser.add_argument("--max_len", type=int, default=1500)
-    parser.add_argument("--p_rope_val", type=float, default=0.75)
+    # Model-specific knobs.
+    parser.add_argument(
+        "--dt_mode",
+        type=str,
+        default="replace",
+        choices=["learned", "replace", "additive"],
+    )
+    parser.add_argument("--d_model", type=int, default=384)
+    parser.add_argument("--d_hidden", type=int, default=384)
+    parser.add_argument("--n_perv_layer", type=int, default=3)
+    parser.add_argument("--n_fusion_blocks", type=int, default=3)
+    parser.add_argument("--n_heads_varattn", type=int, default=4)
+    parser.add_argument("--d_state", type=int, default=16)
+    parser.add_argument("--d_conv", type=int, default=4)
+    parser.add_argument("--expand", type=int, default=2)
+    parser.add_argument("--grid_K", type=int, default=128)
+    parser.add_argument("--n_freq", type=int, default=8)
 
     args = parser.parse_args()
     pl.seed_everything(args.seed, workers=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    model = RoMAEForecaster(
-        enc_d_model=args.enc_d_model,
-        enc_nhead=args.enc_nhead,
-        enc_depth=args.enc_depth,
-        dec_d_model=args.dec_d_model,
-        dec_nhead=args.dec_nhead,
-        dec_depth=args.dec_depth,
-        max_len=args.max_len,
-        p_rope_val=args.p_rope_val,
+    model = MultivariateMambaForecaster(
+        d_model=args.d_model,
+        d_hidden=args.d_hidden,
         n_vars=args.n_vars,
+        n_perv_layer=args.n_perv_layer,
+        n_fusion_blocks=args.n_fusion_blocks,
+        n_heads_varattn=args.n_heads_varattn,
+        d_state=args.d_state,
+        d_conv=args.d_conv,
+        expand=args.expand,
+        dt_mode=args.dt_mode,
+        grid_K=args.grid_K,
+        t_max=args.t_max,
+        n_freq=args.n_freq,
         lr=args.lr,
         weight_decay=args.weight_decay,
         num_warmup_steps=args.num_warmup_steps,
@@ -77,7 +89,7 @@ def main():
     dm = MultivariateSinusoidalDataModule(
         data_root=args.data_root,
         regime=args.regime,
-        format="flat_tokens",
+        format="per_variate",
         train_batch_size=args.train_batch_size,
         val_batch_size=args.val_batch_size,
         num_workers=args.num_workers,
@@ -121,10 +133,10 @@ def main():
         print("No checkpoint saved, testing with last model")
         trainer.test(model, dm)
 
-    metrics_row = {
-        "model": "romae", "variant": "default", "regime": args.regime, "seed": args.seed,
-        "n_params": n_params, "wall_fit_sec": round(wall_fit, 2),
-    }
+    metrics_row = {"model": "mamba_mv", "variant": args.dt_mode, "regime": args.regime, "seed": args.seed}
+    metrics_row["n_params"] = n_params
+    metrics_row["wall_fit_sec"] = round(wall_fit, 2)
+
     if hasattr(model, "_test_agg"):
         metrics_row.update({f"test_{k}": round(float(v), 6) for k, v in model._test_agg.items()})
 
@@ -135,6 +147,7 @@ def main():
         writer.writerow(metrics_row)
     print(f"Test metrics saved to {csv_path}")
 
+    # Also dump per-sample outputs for downstream significance tests.
     if hasattr(model, "_test_outputs") and model._test_outputs:
         samples_path = os.path.join(args.output_dir, "per_sample.jsonl")
         with open(samples_path, "w") as f:

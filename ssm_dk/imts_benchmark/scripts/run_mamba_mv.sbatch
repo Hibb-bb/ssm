@@ -1,32 +1,31 @@
 #!/bin/bash
-#SBATCH --account=p32626
+#SBATCH --account=p33049
 #SBATCH --job-name=mamba_mv
 #SBATCH --nodes=1
-#SBATCH --output=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1/mamba_mv/slurm_%A_%a.out
-#SBATCH --error=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1/mamba_mv/slurm_%A_%a.err
+#SBATCH --output=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1/mamba_mv/slurm_%A_%a.out
+#SBATCH --error=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1/mamba_mv/slurm_%A_%a.err
 #SBATCH --time=2:00:00
 #SBATCH --partition=gengpu
 #SBATCH --gres=gpu:h100:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --array=1-30
+#SBATCH --array=1-60
 
 # Multivariate Mamba forecaster (paper's full arch): VarAttn + TemporalMamba.
-#   regimes : sparse_independent, sparse_dependent
+#   regimes : sparse_independent, sparse_dependent, nogap_independent, nogap_dependent
 #   dt_modes: learned, replace, additive
 #   seeds   : 1..5
-# Total runs: 2 * 3 * 5 = 30.
+# Total runs: 4 * 3 * 5 = 60.
 #
-# Environment and SLURM parameters intentionally match
-# ssm_model/ssm/mamba_experiments/scripts/run_mamba_cuda_fixed.sh so that
-# the CUDA selective-scan kernel is loadable and wall-clock timings are
-# comparable across experiments.
+# Environment and SLURM parameters intentionally match the original
+# mvcompare_v1 setup so that wall-clock timings are directly comparable
+# across history=7.0 (frozen) and history=8.0 (this benchmark).
 #
-# SLURM_ARRAY_TASK_ID in [1, 30]. Mapping (1-based):
+# SLURM_ARRAY_TASK_ID in [1, 60]. Mapping (1-based):
 #   k = TASK_ID - 1
-#   regime_idx = k // 15        (0 or 1)
-#   dt_idx     = (k % 15) // 5  (0, 1, 2)
+#   regime_idx = k // 15        (0..3)
+#   dt_idx     = (k % 15) // 5  (0..2)
 #   seed_idx   = k % 5          (0..4)
 
 module purge
@@ -37,9 +36,9 @@ export CUDA_VISIBLE_DEVICES=0
 
 MAMBA_ENV=/projects/b1094/StarEmbed/pythonenvs/mamba
 CODE_DIR=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_dk
-LOG_BASE=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1
+LOG_BASE=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1
 
-REGIMES=("sparse_independent" "sparse_dependent")
+REGIMES=("sparse_independent" "sparse_dependent" "nogap_independent" "nogap_dependent")
 DT_MODES=("learned" "replace" "additive")
 SEEDS=(1 2 3 4 5)
 
@@ -72,7 +71,7 @@ echo ""
 cd $CODE_DIR
 START_TIME=$(date +%s)
 
-srun ${MAMBA_ENV}/bin/python -m mv_vs_romae.mamba_mv.train_mv \
+srun ${MAMBA_ENV}/bin/python -m imts_benchmark.mamba_mv.train_mv \
     --regime $REGIME \
     --dt_mode $DT_MODE \
     --seed $SEED \

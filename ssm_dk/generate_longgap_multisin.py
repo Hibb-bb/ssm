@@ -203,6 +203,7 @@ def build_sample(
     ts_rng,
     signal_rng,
     gap_rng,
+    history,
 ):
     """Return a dict in sparse-flat format plus the raw per-variate arrays
     (so callers can compute dataset-wide min/max before normalization)."""
@@ -249,7 +250,7 @@ def build_sample(
         "timestamp": all_timestamp,
         "past_feat_dynamic_real": all_delta_t,
         "n_obs_per_var": obs_per_var,
-        "history": HISTORY,
+        "history": history,
         "_gap_intervals": intervals,
         "_gap_variate_mask": gap_mask_per_var.tolist(),
     }
@@ -303,12 +304,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--regime", required=True, choices=["sparse_independent", "sparse_dependent"])
     parser.add_argument("--output_root", type=str, default=None)
+    parser.add_argument("--out_subdir", type=str, default=None,
+                        help="Override output sub-directory name (defaults to --regime). "
+                             "Use to write no-gap variants under nogap_* without overwriting "
+                             "the long-gap data at sparse_*.")
     parser.add_argument("--n_train", type=int, default=1000)
     parser.add_argument("--n_val", type=int, default=200)
     parser.add_argument("--n_test", type=int, default=200)
     parser.add_argument("--n_vars", type=int, default=N_VARS)
     parser.add_argument("--n_obs_per_var", type=int, default=N_OBS_PER_VAR)
     parser.add_argument("--t_max", type=float, default=T_MAX)
+    parser.add_argument("--history", type=float, default=HISTORY,
+                        help="Forecast boundary stored in each sample's `history` field "
+                             "(datamodule reads this to build pred_mask = timestamps >= history). "
+                             "Does NOT affect signal generation, only metadata.")
     parser.add_argument("--frac_regular", type=float, default=FRAC_REGULAR,
                         help="Fraction of per-variate time gaps that are regular (0 = all random).")
     parser.add_argument("--gap_variates_per_sample", type=int, default=None,
@@ -366,6 +375,7 @@ def main():
             ts_rng,
             signal_rng,
             gap_rng,
+            args.history,
         )
         all_rows.append(row)
         all_raw.append(raw)
@@ -394,7 +404,7 @@ def main():
         data_min = None
         data_max = None
 
-    ds_name = args.regime
+    ds_name = args.out_subdir if args.out_subdir is not None else args.regime
     out_dir = output_root / ds_name
     os.makedirs(out_dir, exist_ok=True)
 
@@ -411,7 +421,7 @@ def main():
         "data_max": [data_max] if data_max is not None else None,
         "time_max": args.t_max,
         "normalize_vals": bool(args.normalize),
-        "history": HISTORY,
+        "history": args.history,
         "n_vars": args.n_vars,
         "dataset": ds_name,
         "regime": args.regime,

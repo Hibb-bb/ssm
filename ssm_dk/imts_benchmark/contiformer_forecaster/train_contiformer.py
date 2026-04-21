@@ -1,11 +1,13 @@
-"""Train the multivariate Mamba forecaster on the sparse-flat synthetic data.
+"""Train ContiFormer as a forecaster on the sparse-flat synthetic data.
+
+Sized to ~7.65M params via d_model=320, d_inner=1024, n_layers=6, n_head=4,
+d_k=80 (within +/-10% of the 7.8M shared budget). Uses identical optimizer /
+scheduler / batch / precision as Mamba-MV / RoMAE / mTAN trainers via
+shared_config.fair_defaults.
 
 Usage:
-    python -m mv_vs_romae.mamba_mv.train_mv \
-        --dt_mode replace \
-        --regime sparse_dependent \
-        --seed 1 \
-        --output_dir /path/to/output
+    python -m imts_benchmark.contiformer_forecaster.train_contiformer \
+        --regime sparse_dependent --seed 1 --output_dir /path/to/output
 """
 
 from __future__ import annotations
@@ -26,57 +28,50 @@ from pytorch_lightning.callbacks import (
 )
 
 _THIS_DIR = Path(__file__).resolve().parent
-_SSM_DK = _THIS_DIR.parents[1]  # .../ssm_dk
+_SSM_DK = _THIS_DIR.parents[1]
 if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
-from mv_vs_romae.shared_config.fair_defaults import add_fair_args
-from mv_vs_romae.shared_data.multivariate_datamodule import (
+from imts_benchmark.shared_config.fair_defaults import add_fair_args
+from imts_benchmark.shared_data.multivariate_datamodule import (
     MultivariateSinusoidalDataModule,
 )
-from mv_vs_romae.mamba_mv.multivariate_forecaster import MultivariateMambaForecaster
+from imts_benchmark.contiformer_forecaster.contiformer_forecaster import (
+    ContiFormerForecaster,
+)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multivariate Mamba forecasting (paper arch)")
+    parser = argparse.ArgumentParser(description="ContiFormer forecasting (continuous-time transformer)")
     add_fair_args(parser)
 
-    # Model-specific knobs.
-    parser.add_argument(
-        "--dt_mode",
-        type=str,
-        default="replace",
-        choices=["learned", "replace", "additive"],
-    )
-    parser.add_argument("--d_model", type=int, default=384)
-    parser.add_argument("--d_hidden", type=int, default=384)
-    parser.add_argument("--n_perv_layer", type=int, default=3)
-    parser.add_argument("--n_fusion_blocks", type=int, default=3)
-    parser.add_argument("--n_heads_varattn", type=int, default=4)
-    parser.add_argument("--d_state", type=int, default=16)
-    parser.add_argument("--d_conv", type=int, default=4)
-    parser.add_argument("--expand", type=int, default=2)
-    parser.add_argument("--grid_K", type=int, default=128)
-    parser.add_argument("--n_freq", type=int, default=8)
+    parser.add_argument("--d_model", type=int, default=320)
+    parser.add_argument("--d_inner", type=int, default=1024)
+    parser.add_argument("--n_layers", type=int, default=6)
+    parser.add_argument("--n_head", type=int, default=4)
+    parser.add_argument("--d_k", type=int, default=80)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--atol_ode", type=float, default=1e-1)
+    parser.add_argument("--rtol_ode", type=float, default=1e-1)
+    parser.add_argument("--method_ode", type=str, default="rk4")
+    parser.add_argument("--actfn_ode", type=str, default="tanh")
 
     args = parser.parse_args()
     pl.seed_everything(args.seed, workers=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    model = MultivariateMambaForecaster(
-        d_model=args.d_model,
-        d_hidden=args.d_hidden,
+    model = ContiFormerForecaster(
         n_vars=args.n_vars,
-        n_perv_layer=args.n_perv_layer,
-        n_fusion_blocks=args.n_fusion_blocks,
-        n_heads_varattn=args.n_heads_varattn,
-        d_state=args.d_state,
-        d_conv=args.d_conv,
-        expand=args.expand,
-        dt_mode=args.dt_mode,
-        grid_K=args.grid_K,
-        t_max=args.t_max,
-        n_freq=args.n_freq,
+        d_model=args.d_model,
+        d_inner=args.d_inner,
+        n_layers=args.n_layers,
+        n_head=args.n_head,
+        d_k=args.d_k,
+        dropout=args.dropout,
+        atol_ode=args.atol_ode,
+        rtol_ode=args.rtol_ode,
+        method_ode=args.method_ode,
+        actfn_ode=args.actfn_ode,
         lr=args.lr,
         weight_decay=args.weight_decay,
         num_warmup_steps=args.num_warmup_steps,
@@ -133,10 +128,10 @@ def main():
         print("No checkpoint saved, testing with last model")
         trainer.test(model, dm)
 
-    metrics_row = {"model": "mamba_mv", "variant": args.dt_mode, "regime": args.regime, "seed": args.seed}
-    metrics_row["n_params"] = n_params
-    metrics_row["wall_fit_sec"] = round(wall_fit, 2)
-
+    metrics_row = {
+        "model": "contiformer", "variant": "default", "regime": args.regime, "seed": args.seed,
+        "n_params": n_params, "wall_fit_sec": round(wall_fit, 2),
+    }
     if hasattr(model, "_test_agg"):
         metrics_row.update({f"test_{k}": round(float(v), 6) for k, v in model._test_agg.items()})
 
@@ -147,7 +142,6 @@ def main():
         writer.writerow(metrics_row)
     print(f"Test metrics saved to {csv_path}")
 
-    # Also dump per-sample outputs for downstream significance tests.
     if hasattr(model, "_test_outputs") and model._test_outputs:
         samples_path = os.path.join(args.output_dir, "per_sample.jsonl")
         with open(samples_path, "w") as f:

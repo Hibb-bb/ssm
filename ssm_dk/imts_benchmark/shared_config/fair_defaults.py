@@ -16,10 +16,10 @@ DATA_ROOT_DEFAULT = (
     "moirai/uni2ts_hongyu/ssm_dk/data"
 )
 LOG_ROOT_DEFAULT = (
-    "/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1"
+    "/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1"
 )
 
-HISTORY = 7.0
+HISTORY = 8.0
 T_MAX = 10.0
 N_VARS = 3
 
@@ -35,7 +35,12 @@ VAL_BATCH_SIZE = 32
 NUM_WORKERS = 2
 
 SEEDS = (1, 2, 3, 4, 5)
-REGIMES = ("sparse_independent", "sparse_dependent")
+REGIMES = (
+    "sparse_independent",
+    "sparse_dependent",
+    "nogap_independent",
+    "nogap_dependent",
+)
 
 
 def add_fair_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:

@@ -1,7 +1,7 @@
 """Generate headline plots for Mamba-MV vs RoMAE comparison.
 
-Reads:  mvcompare_v1/summary.csv  + per-seed per_sample.jsonl files.
-Writes: mvcompare_v1/plots/*.png
+Reads:  imts_benchmark_v1/summary.csv  + per-seed per_sample.jsonl files.
+Writes: imts_benchmark_v1/plots/*.png
 """
 from __future__ import annotations
 import argparse, csv, glob, json, os
@@ -175,7 +175,7 @@ def plot_overall_paired_scatter(root: Path, outdir: Path, mamba_variant="learned
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results_root", default="/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1")
+    ap.add_argument("--results_root", default="/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1")
     ap.add_argument("--outdir", default=None)
     args = ap.parse_args()
     root = Path(args.results_root)

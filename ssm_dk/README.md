@@ -1,12 +1,20 @@
 # `ssm_dk/` — Synthetic Long-Gap Multivariate Forecasting Experiments
 
-Working directory for the **Mamba-MV vs RoMAE** comparison on irregular
-multivariate time series with long missing gaps. The goal is to verify that
+Working directory for the **multivariate IMTS forecasting benchmark**:
 the paper's multivariate Mamba architecture (irregular-step SSM → shared-grid
 alignment → variable-axis attention → temporal Mamba → query-time readout)
-beats a parameter-matched transformer MAE baseline (RoMAE) on irregular
-multivariate forecasting, especially when cross-variate reasoning is needed
-across long gaps.
+compared against transformer MAE (RoMAE) and three additional IMTS baselines
+(mTAN, ContiFormer, S5) on irregular multivariate time series, with and
+without long missing gaps.
+
+> **Phase note**: the original 2-model `mv_vs_romae` work (history=7.0,
+> Mamba-MV vs RoMAE only) is frozen under
+> [`imts_benchmark/RESULTS_mamba_vs_romae.md`](imts_benchmark/RESULTS_mamba_vs_romae.md)
+> and [`imts_benchmark/BUILD_REPORT_mamba_vs_romae.md`](imts_benchmark/BUILD_REPORT_mamba_vs_romae.md).
+> The current phase extends this to 5 models × 4 regimes (long-gap +
+> no-gap) at history=8.0; see
+> [`imts_benchmark_plan.md`](imts_benchmark_plan.md) for the full plan,
+> and `imts_benchmark/RESULTS_imts_benchmark.md` once results land.
 
 ---
 
@@ -20,8 +28,8 @@ ssm_dk/
 ├── synthetic_sin_plan.md           # original design doc for the dataset
 ├── mamba_vs_romae_plan.md          # plan for the model comparison
 ├── _smoke_plot.py, _smoke_plot.png # 1-sample sanity plot used during design
-└── mv_vs_romae/                    # model code + experiment scripts
-    ├── BUILD_REPORT.md             # what we built and how (read this first)
+└── imts_benchmark/                    # model code + experiment scripts
+    ├── BUILD_REPORT_mamba_vs_romae.md             # what we built and how (read this first)
     ├── SETUP.md                    # env + RoMAE install + data regeneration
     ├── shared_config/              # fair-comparison knobs (single source of truth)
     ├── shared_data/                # multivariate datamodule (per-variate / flat-tokens)
@@ -31,7 +39,7 @@ ssm_dk/
     └── scripts/                    # SLURM sbatch files
 ```
 
-`data/` and `mv_vs_romae/romae_forecaster/_romae_repo/` are **not** committed
+`data/` and `imts_benchmark/romae_forecaster/_romae_repo/` are **not** committed
 (see `.gitignore`). Both are regenerated / installed per the instructions
 below.
 
@@ -56,8 +64,12 @@ Per-sample: V=3 variates, ~120 observations each over `[0, t_max=10]`,
 with independent random irregular timestamps per variate. One forbidden
 interval of length ~1.5-3.0 is placed in `[2.5, 6.0)`; by default exactly
 **one** of the three variates has all its observations inside the gap dropped
-(configurable via `--gap_variates_per_sample`). Forecast horizon is
-`t ≥ history=7.0`.
+(configurable via `--gap_variates_per_sample`). The forecast horizon is set
+at training time via `--history` (default `8.0` in the current
+`imts_benchmark` runs; the frozen `mv_vs_romae` runs used `7.0`). Each
+sample stores the full trajectory on `[0, t_max]`, so `history` can shift
+without regenerating data. The no-gap variants set
+`--gap_variates_per_sample 0 --n_gaps 0`.
 
 Storage: sparse-flat HuggingFace arrow dataset. Each row has
 
@@ -68,7 +80,7 @@ Storage: sparse-flat HuggingFace arrow dataset. Each row has
 | `timestamp` | list[float] | per-variate timestamps, concatenated |
 | `past_feat_dynamic_real` | list[float] | per-variate Δt (first per-variate entry = 0) |
 | `n_obs_per_var` | list[int] | per-variate observation count, length V |
-| `history` | float | scalar, same for every sample (7.0) |
+| `history` | float | scalar, same for every sample (was `7.0` in original generation; current runs override at training time) |
 
 ### Regenerating
 
@@ -87,33 +99,33 @@ across machines. Full design details in
 
 ---
 
-## Model comparison (`mv_vs_romae/`)
+## Model comparison (`imts_benchmark/`)
 
-See [`mv_vs_romae/BUILD_REPORT.md`](mv_vs_romae/BUILD_REPORT.md) for the
+See [`imts_benchmark/BUILD_REPORT_mamba_vs_romae.md`](imts_benchmark/BUILD_REPORT_mamba_vs_romae.md) for the
 full build report (what was reused from the canonical
 `ssm_model/ssm/mamba_experiments/`, what was modified, the pitfalls and
-their fixes). See [`mv_vs_romae/SETUP.md`](mv_vs_romae/SETUP.md) for
+their fixes). See [`imts_benchmark/SETUP.md`](imts_benchmark/SETUP.md) for
 installation.
 
 Two models, parameter-matched to **~7.80M trainable**:
 
-- **Mamba-MV** — [`mv_vs_romae/mamba_mv/multivariate_forecaster.py`](mv_vs_romae/mamba_mv/multivariate_forecaster.py).
+- **Mamba-MV** — [`imts_benchmark/mamba_mv/multivariate_forecaster.py`](imts_benchmark/mamba_mv/multivariate_forecaster.py).
   Entry file to understand the architecture top-to-bottom; the five
   helper modules in the same folder are the pieces it calls in order.
   Reuses `MambaBlock` / `MambaIrregularBlock` from
   `ssm_model/ssm/mamba_experiments/forecaster/mamba_block.py`.
-- **RoMAE** — [`mv_vs_romae/romae_forecaster/romae_forecaster.py`](mv_vs_romae/romae_forecaster/romae_forecaster.py).
+- **RoMAE** — [`imts_benchmark/romae_forecaster/romae_forecaster.py`](imts_benchmark/romae_forecaster/romae_forecaster.py).
   Wraps `RoMAEForPreTraining` (from github.com/Chromeilion/RoMAE, pinned
   to commit `480cfaf`) with forecast-style masking and `(timestamp,
   variate_id)` feeding RoPEND as two float coordinate dims.
 
 Both use the same optimizer / schedule / batch size / precision / seeds —
-controlled centrally in `mv_vs_romae/shared_config/fair_defaults.py`.
+controlled centrally in `imts_benchmark/shared_config/fair_defaults.py`.
 
 ### Running the full experiment
 
 ```bash
-cd ssm_dk/mv_vs_romae/scripts
+cd ssm_dk/imts_benchmark/scripts
 MAMBA_JID=$(sbatch --parsable run_debug_mamba.sbatch)      # fp32 sanity
 ROMAE_JID=$(sbatch --parsable run_debug_romae.sbatch)      # fp32 sanity
 MAMBA_FULL=$(sbatch --parsable --dependency=afterok:$MAMBA_JID run_mamba_mv.sbatch)
@@ -124,7 +136,7 @@ sbatch --dependency=afterany:${MAMBA_FULL}:${ROMAE_FULL} run_aggregate.sbatch
 This runs 2 debug jobs (fp32, 2 epochs, ~1 min each) as a safety gate,
 then the full 30-task Mamba array × 10-task RoMAE array, then a CPU
 aggregator. Results land under
-`/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/mvcompare_v1/`:
+`/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v1/`:
 per-seed `test_metrics.csv` + `per_sample.jsonl`, plus top-level
 `summary.csv` and paired Wilcoxon significance (Mamba-MV best variant
 vs RoMAE) per regime.
@@ -140,7 +152,7 @@ selective-scan kernel available). Built via
 
 RoMAE dependencies (`pydantic-settings`, `accelerate`, `safetensors`,
 `nvidia-ml-py`, `wandb`) were added to the same env. Full install recipe
-in [`mv_vs_romae/SETUP.md`](mv_vs_romae/SETUP.md).
+in [`imts_benchmark/SETUP.md`](imts_benchmark/SETUP.md).
 
 ---
 
