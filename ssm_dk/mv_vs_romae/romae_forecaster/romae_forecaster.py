@@ -107,12 +107,13 @@ class RoMAEForecaster(pl.LightningModule):
 
         B, N = values.shape
 
-        # Zero out values in the forecast region so nothing leaks through
-        # the input projection or the RoPE positions (cf. paper adaptation).
-        masked_values = values.clone()
-        masked_values[pred_mask] = 0.0
-
-        values_5d = masked_values.view(B, N, 1, 1, 1)
+        # IMPORTANT: pass values AS-IS. RoMAE's forward already strips masked
+        # positions from the encoder input (`x = x[~mask]`) and uses the
+        # original values at masked positions as the regression target
+        # (`m_x = x[mask]`). If we zero the values at pred_mask here, m_x
+        # becomes identically zero -> the model learns to output zero and
+        # train/val MSE collapses to 0 while test MSE = var(y) + mean(y)^2.
+        values_5d = values.view(B, N, 1, 1, 1)
         positions = torch.stack(
             [timestamps, variate_id.to(timestamps.dtype)], dim=1
         )  # [B, 2, N]
