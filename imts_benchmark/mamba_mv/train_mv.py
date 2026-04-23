@@ -31,6 +31,11 @@ if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
 from imts_benchmark.shared_config.fair_defaults import add_fair_args
+from imts_benchmark.shared_config.wandb_lightning import (
+    build_wandb_logger,
+    log_wandb_after_fit,
+    log_wandb_run_summary,
+)
 from imts_benchmark.shared_data.multivariate_datamodule import (
     MultivariateSinusoidalDataModule,
 )
@@ -108,6 +113,8 @@ def main():
         LearningRateMonitor(logging_interval="step"),
     ]
 
+    wandb_logger = build_wandb_logger(args, extra_config={"n_params": n_params})
+
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         callbacks=callbacks,
@@ -119,6 +126,7 @@ def main():
         precision=args.precision,
         log_every_n_steps=1,
         enable_progress_bar=True,
+        logger=wandb_logger if wandb_logger else False,
     )
 
     start = time.time()
@@ -126,6 +134,11 @@ def main():
     wall_fit = time.time() - start
 
     best_ckpt = callbacks[0].best_model_path
+    best_val = None
+    if best_ckpt and callbacks[0].best_model_score is not None:
+        best_val = float(callbacks[0].best_model_score)
+    log_wandb_after_fit(wandb_logger, wall_fit, best_val)
+
     if best_ckpt:
         print(f"Best checkpoint: {best_ckpt}")
         print(f"Best val/mse: {float(callbacks[0].best_model_score):.6f}")
@@ -158,6 +171,8 @@ def main():
 
     for k, v in metrics_row.items():
         print(f"  {k}: {v}")
+
+    log_wandb_run_summary(wandb_logger, metrics_row)
 
 
 if __name__ == "__main__":

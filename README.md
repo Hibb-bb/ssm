@@ -159,13 +159,27 @@ This produces wide/long CSVs per regime, paired Wilcoxon (Mamba-MV best
 vs each baseline), and the per-variate in-gap / out-gap breakdown for
 Phase 4.
 
+### Weights & Biases (optional)
+
+All fair trainers accept `--use_wandb` plus optional `--wandb_project`,
+`--wandb_entity`, and `--wandb_run_name`. Install `wandb` in the training
+environment, export `WANDB_API_KEY`, and for Slurm arrays pick a run name
+that matches the job grid (same variables as in e.g.
+[`run_mamba_mv_phase4_1.sbatch`](imts_benchmark/scripts/run_mamba_mv_phase4_1.sbatch)):
+`--wandb_run_name "${REGIME}_${DT_MODE}_seed${SEED}_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"`.
+Baseline Slurm scripts have no `DT_MODE`; use `${REGIME}_seed${SEED}_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}` or add your own variant tag. Offline runs:
+set `WANDB_MODE=offline` and sync later with `wandb sync`. See
+[`imts_benchmark/shared_config/fair_defaults.py`](imts_benchmark/shared_config/fair_defaults.py)
+module docstring for the same notes.
+
 ---
 
 ## Environment
 
 - Python 3.12 conda env at `/projects/b1094/StarEmbed/pythonenvs/mamba`
   (PyTorch 2.5 + CUDA 12.4, `mamba-ssm` built from source with the CUDA
-  selective-scan kernel). Mamba / RoMAE run from this env.
+  selective-scan kernel). Mamba / RoMAE run from this env. Add
+  `pip install wandb` if you use `--use_wandb`.
 - JAX/Flax env at `/projects/b1094/StarEmbed/pythonenvs/s5-jax` for S5.
   Built via [`imts_benchmark/scripts/build_s5_env.sh`](imts_benchmark/scripts/build_s5_env.sh).
 
@@ -189,3 +203,19 @@ and is read-only.
 
 Files prefixed `_` (`_smoke_*.py`, `_smoke_plot.py`) are design-time
 smoke checks, not part of the benchmark itself.
+
+
+
+# WANDB Command
+
+```bash
+srun ${MAMBA_ENV}/bin/python -m imts_benchmark.mamba_mv.train_mv \
+    --regime $REGIME \
+    --dt_mode $DT_MODE \
+    --seed $SEED \
+    --data_root $DATA_ROOT \
+    --output_dir $OUTPUT_DIR \
+    --use_wandb \
+    --wandb_project TSKing \
+    --wandb_run_name "${REGIME}_${DT_MODE}_seed${SEED}"
+```
