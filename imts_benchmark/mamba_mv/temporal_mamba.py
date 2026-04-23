@@ -8,20 +8,10 @@ reshaping (B, K, V, D) -> (B*V, K, D).
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import torch
 import torch.nn as nn
 
-_MAMBA_EXP = (
-    Path(__file__).resolve().parents[3]
-    / "ssm_model" / "ssm" / "mamba_experiments"
-)
-if str(_MAMBA_EXP) not in sys.path:
-    sys.path.insert(0, str(_MAMBA_EXP))
-
-from forecaster.mamba_block import MambaBlock  # noqa: E402
+from .mamba_block import MambaBlock
 
 
 class TemporalMambaOnGrid(nn.Module):
