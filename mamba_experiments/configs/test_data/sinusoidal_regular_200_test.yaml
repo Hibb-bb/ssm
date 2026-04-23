@@ -1,9 +1,0 @@
-_target_: uni2ts.data.builder.simple.SimpleDatasetBuilder
-dataset: sinusoidal_regular/test
-weight: 1.0
-
-sample_time_series:
-  _target_: uni2ts.data.dataset.SampleTimeSeriesType
-  _args_: ["none"]
-
-storage_path: /projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/tpatchgnn_data_nobs200
