@@ -1,8 +1,25 @@
 # S5 Baseline Spec — `s5-pytorch` Port
 
-**Date**: 2026-04-22
-**Status**: Port installed and Python-level import verified. Behavioral smoke pending.
-**Verdict**: **YELLOW** — pragmatic choice of a community port over the JAX reference. Two concrete risks to track.
+**Date**: 2026-04-22 (initial) · 2026-04-23 (post Phase-2 revision)
+**Status**: Paper-native config validated in Phase 2; in training for Phases 3 / 4-1 / 4-2.
+**Verdict**: **GREEN** after paper-native switch. Earlier YELLOW-grade risks (forced 7.8M parity + global weight decay) were the actual cause of Phase-2 collapse; both resolved in the current config.
+
+## Config currently in training (paper-native)
+
+| Knob | Value | Source |
+|---|---|---|
+| `d_model` | 128 | Smith et al. 2023 LRA config |
+| `state_dim` | 256 | Smith et al. 2023 LRA config |
+| `n_layers` | 6 | Smith et al. 2023 |
+| LR | 1e-3 | paper range [5e-4, 1e-3]; we use the upper end |
+| Weight decay | 0.05 | paper-native |
+| Physical batch | 32 (accumulate 4× → effective 128) | H100-80GB memory at B·V=384 scan |
+| WD routing | Lambda / log_step / D / B / C **excluded** | paper-native; critical for training |
+| Patience (early stop) | 50 | fair default bumped from 20 |
+
+Earlier forced-7.8M config (`d_model=384, state_dim=96`) with `lr=5e-4, wd=0.01` applied to all params collapsed 3–5/5 seeds. Paper-native + SSM-param WD exclusion + patience=50 made S5 the strongest baseline on Phase 2 irregular regimes — triggered the decision to consider Mamba HPO if Phase 3/4 does not reverse this ordering (`docs/HPO_PLAN.md`).
+
+---
 
 ## Upstream summary (reference)
 

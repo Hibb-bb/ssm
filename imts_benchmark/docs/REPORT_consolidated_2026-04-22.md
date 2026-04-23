@@ -1,10 +1,11 @@
 # IMTS Benchmark — Consolidated Technical Report (Phases 2–4)
 
 **Paper target:** NeurIPS 2026 — Mamba with true-Δt discretization for irregular multivariate time series forecasting.
-**Date:** 2026-04-22
+**Updated:** 2026-04-23 (baselines, Phase-4 split, HPO gate)
+**Originally consolidated:** 2026-04-22
 **Repository root:** `/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_dk`
 
-This document consolidates (a) the planning and audit notes written prior to today (plan file, baseline specs, build notes, ContiFormer deferral note) with (b) today's edits — generator extensions, per-variate / gap-region metric machinery, aggregator rewrite — into a single reference to cite when writing the paper. Previous-version build/results reports are archived under `docs/archive/` and have been superseded by this document.
+This document consolidates the planning notes, baseline audits, build notes, generator extensions, per-variate / gap-region metric machinery, and aggregator rewrite into a single reference to cite when writing the paper. Phase-2 diagnosis revisions and Phase-4 split into 4-1 / 4-2 are folded in here; previous-version build/results reports remain archived under `docs/archive/`.
 
 ---
 
@@ -12,31 +13,38 @@ This document consolidates (a) the planning and audit notes written prior to tod
 
 ### 1.1 Research question
 
-Does a Mamba-based state-space model (SSM) that discretizes using the **true inter-sample Δt** outperform irregular-TS baselines that either (i) use a **learned Δ** (S5, vanilla Mamba), (ii) rely on attention over **reference points** (mTAN, ContiFormer), or (iii) rely on **positional encodings of absolute time** (RoMAE)?
+Does a Mamba-based state-space model (SSM) that discretizes using the **true inter-sample Δt** outperform irregular-TS baselines that either (i) use a **learned Δ** (S5, vanilla Mamba), or (ii) rely on **positional encodings of absolute time** (RoMAE)?
 
 Two auxiliary claims:
 - A cross-variate time-alignment SSM layer is especially useful for **async** multivariate data.
-- An irregularity-curriculum pretrain transfers from regular → irregular.
+- The claim should survive varying which variate is deprived of observations (Phase 4-1 vs 4-2).
 
-### 1.2 Three phases
+### 1.2 Phases
 
 | Phase | Data regime | Purpose |
 |---|---|---|
 | 2 | Sync dense (shared timestamps per sample, 4 irregularity levels via `frac_regular ∈ {0.0, 0.3, 0.8, 1.0}`) | Establish baseline ordering in the simplest regime; fairness sanity check |
-| 3 | Async dense (independent timestamps per variate, 4 irregularity levels, convex-mix preserved analytically) | Tests cross-variate alignment: v3 = w·v1 + (1−w)·v2 under async sampling |
-| 4 | Async + long gap (always gap v3 over an interval) | Tests performance inside vs outside a forecast-time gap for the variate that depends on the other two |
+| 3 | Async dense (independent timestamps per variate, same 4 regimes, convex-mix preserved analytically) | Tests cross-variate alignment: v3 = w·v0 + (1−w)·v1 under async sampling |
+| 4-1 | Async + long gap on v3 (fixed_v3) | Tests forward-mixture recovery: with v3 gapped, model must synthesize from v0, v1 |
+| 4-2 | Async + long gap on a uniformly random variate | Tests inverse-mixture recovery as well: when v0 or v1 is gapped, model must invert using v3 and the other part |
 
-### 1.3 Models compared
+### 1.3 Models compared (current)
 
-| Model | Role | Paradigm | Params | Status |
+| Model | Role | Paradigm | Config | Status |
 |---|---|---|---|---|
-| **Mamba-MV** (ours) | Target model | SSM with true-Δt + cross-variate alignment layer | 7.80 M | In training (Phase 2) |
-| **S5** | Baseline SSM | Diagonal SSM with learned Δ, parallel scan | 7.79 M | Built today |
-| **mTAN** | Baseline attention | Continuous-time attention over learned ref points | 7.73 M | Built previously |
-| **RoMAE** | Baseline transformer | Rotary-PE masked autoencoder | 7.79 M | Built previously |
-| **ContiFormer** | Deferred | ODE-attention transformer | 1.45 M (reduced) | **Deferred** (OOM on H100-80GB — see §6) |
+| **Mamba-MV** (ours) | Target model | SSM with true-Δt + cross-variate alignment layer | `d_model=256`, `dt_mode ∈ {learned, replace}` | In training (Phases 3, 4-1, 4-2) |
+| **S5** | Baseline SSM | Diagonal SSM with learned Δ, parallel scan | **paper-native**: `d_model=128`, `state_dim=256`, `lr=1e-3`, `wd=0.05`, physical B=32×accum=4 | In training |
+| **RoMAE** | Baseline transformer | Rotary-PE masked autoencoder | paper-native (tubelet=(1,1,1), RoPE-2D) | In training |
 
-Fairness budget: **7.8 M ± 10 %** (hit by every kept model).
+**Dropped / deferred:**
+
+| Model | Reason | Date | Details |
+|---|---|---|---|
+| **mTAN** | Persistent training collapse | 2026-04-22 | Collapsed at every size / LR / weight-decay / timestamp-normalization combination tried (forced 7.8M, paper-native, and a 3-rung LR sweep). Test MSE ≈ `Var(y)` across seeds. Dropped from Phase 3/4. |
+| **ContiFormer** | OOM on 80GB H100 | 2026-04-22 | 6 configs attempted; ODE-attention is L² in sequence length and cannot fit L = 360 flat tokens on the hardware we have access to. See §6. T-PATCHGNN (ICML 2024) precedent. |
+| **Mamba `additive` dt_mode** | Shown to be a strict worst-of-both in Phase 2 | 2026-04-22 | Dropped from Phase 3/4 main runs. `learned` and `replace` kept. |
+
+**Param-budget note.** Phase 2 initially enforced a 7.8M ± 10% parity budget across all models. Phase 2 diagnosis showed that the forced parity was *harming* baselines (S5 and RoMAE at 7.8M diverged from the configs their papers validated). For Phase 3/4 we switched S5 and RoMAE to their **paper-native** configs and reported param counts honestly rather than matching a single number. Mamba-MV stays at `d_model=256` (7.80M).
 
 ---
 
@@ -46,7 +54,7 @@ Fairness budget: **7.8 M ± 10 %** (hit by every kept model).
 
 The colleague's generator at `ssm_model/ssm/mamba_experiments/dataset_generation/generate_multivariate_sinusodial_data.py` is the authoritative source. It differs from the earlier `generate_longgap_multisin.py` (now deprecated, header-marked) in two structural ways:
 
-1. **Convex-mixture variate structure.** Three variates are generated; v3 is *not* an independent sinusoid but the convex combination `v3 = w·v1 + (1−w)·v2`, where `w ∼ U(0.2, 0.8)` per sample. This mimics the TimeMixUP construction and makes v3 the natural test of cross-variate alignment.
+1. **Convex-mixture variate structure.** Three variates are generated; v3 is *not* an independent sinusoid but the convex combination `v3 = w·v0 + (1−w)·v1`, where `w ∼ U(0.2, 0.8)` per sample. This mimics the TimeMixUP construction and makes v3 the natural test of cross-variate alignment.
 2. **Four regimes by `frac_regular`** (fraction of evenly-spaced timestamps retained before random thinning) replace the previous "long-gap" regimes: `regular=1.0`, `low_irreg=0.8`, `med_irreg=0.3`, `high_irreg=0.0`.
 
 Shared convention across phases:
@@ -81,24 +89,35 @@ Copy of the Phase 2 generator with two changes:
 1. `generate_timestamps(...)` is called **three times per sample** (one per variate). Each variate has its own `frac_regular` draw applied independently.
 2. **v3 is recomputed analytically at ts3**, not interpolated:
    ```
-   v3_clean(ts3) = w · sinusoid(ts3, f1, a1, φ1)
-                 + (1−w) · sinusoid(ts3, f2, a2, φ2)
+   v3_clean(ts3) = w · sinusoid(ts3, f0, a0, φ0)
+                 + (1−w) · sinusoid(ts3, f1, a1, φ1)
    v3 = v3_clean + noise
    ```
-   This preserves the exact algebraic mixture under async sampling — no interpolation artifact. This is the scientific crux for Phase 3: a well-aligned model can exploit the mixture; a model that treats each variate as an independent channel cannot.
+   This preserves the exact algebraic mixture under async sampling — no interpolation artifact. A well-aligned model can exploit the mixture; a model that treats each variate as an independent channel cannot.
 
 Output tree: `data_correct_async/multisin_{regular,low_irreg,med_irreg,high_irreg}/...`
 
 ### 2.4 Phase 4 — async + long gap (`generate_multivariate_sinusodial_data_gap.py`)
 
-Copy of Phase 3 plus **deterministic gap injection on v3**.
-- Reuses `draw_forbidden_intervals` and `apply_forbidden_mask` from the deprecated `generate_longgap_multisin.py` (kept for this reuse).
+Copy of Phase 3 plus **deterministic gap injection**, reused from `generate_longgap_multisin.py`'s `draw_forbidden_intervals` / `apply_forbidden_mask`.
 - `GAP_START_RANGE = (2.5, 6.0)`, `GAP_LEN_RANGE = (1.5, 3.0)`, `N_GAPS = 1`.
-- **Option C, always gap v3** (variate index 2): the convex-mix variate is the one deprived of observations, so the model must use v1, v2 to reconstruct v3 across the gap.
 - HF schema extended with `gap_starts: Sequence(float32)`, `gap_ends: Sequence(float32)`, `gapped_variate_index: Sequence(int32)` for downstream in-gap/out-gap slicing.
 - With `HISTORY = 8.0`, gaps can extend into the forecast region `[8, 10]`; this is acceptable (intrinsic IMTS condition).
 
-Verification: mean ≈ 111 obs/variate (original 120), min 75 on v3 (loses obs to gap).
+**Two variants via `--gap_variate_mode`** (same generator, two output trees):
+
+| Variant | `--gap_variate_mode` | Gapped variate | Output tree | Scientific purpose |
+|---|---|---|---|---|
+| **Phase 4-1** | `fixed_v3` | always v3 (index 2) | `data_correct_gap/` | Forward-mixture recovery: v0, v1 observed across gap → must produce v3 |
+| **Phase 4-2** | `random_uniform` | uniformly ∈ {v0, v1, v3} per sample | `data_correct_gap_random/` | Inverse-mixture recovery also probed: when v0 or v1 is gapped, recovery requires inverting the mixture via v3 and the other component |
+
+Phase 4-2 gapped-variate distribution verified balanced (stratified across regimes): roughly 430 / 485 / 485 test samples across v0 / v1 / v2 per regime (by test-set construction with deterministic seeds, the 3:3:4 skew reflects rounding in per-sample index draws, not a sampling bug — balanced enough for per-variate statistics).
+
+### 2.5 Generator verification
+
+- Phase 2: mean obs/variate = 120 across all regimes; `frac_regular` monotone in the regime ordering.
+- Phase 3: mean obs/variate = 120; timestamps now vary per variate within a sample (sanity-plotted).
+- Phase 4: mean ≈ 111 obs/variate across regimes (drop from 120 explained by gap removal); min observations on gapped variate drops to ~75 in some samples.
 
 ---
 
@@ -109,119 +128,130 @@ Single source of truth: `shared_config/fair_defaults.py`.
 | Knob | Value | Rationale |
 |---|---|---|
 | Optimizer | AdamW | — |
-| Learning rate | 5e-4 | — |
-| Weight decay | 0.01 | Biases and LayerNorm excluded from decay |
+| Learning rate | 5e-4 (Mamba-MV, RoMAE); **1e-3** (S5) | S5 uses paper-native LR — see §3.1 |
+| Weight decay | 0.01 (Mamba-MV, RoMAE); **0.05** (S5) | S5 paper-native |
 | Warmup | 100 steps (linear) | — |
 | Schedule | Cosine to 1600 steps | — |
 | Effective batch | 128 | via `accumulate_grad_batches` when needed |
 | Precision | fp32 | Mamba and S5 kernels prefer fp32 |
+| Max epochs | 200 | — |
+| Patience (early stop) | **50** | bumped from 20 on 2026-04-22 after seeing S5 / RoMAE early-stopped at ~25 % of the cosine schedule |
 | Seeds | 1–5 (5 seeds per config) | — |
 | History | 8.0 | User decision |
 
-Per-model *physical* batch sizes (effective batch = 128 in all cases via accumulation):
+### 3.1 Recipe deviations (documented)
 
-| Model | Physical B | `accumulate_grad_batches` |
-|---|---|---|
-| Mamba-MV | 128 | 1 |
-| RoMAE | 128 | 1 |
-| mTAN | 128 | 1 |
-| S5 | 32 | 4 (parallel-scan memory at B·V=384 OOMs; B=32·V=96 fits) |
-| ContiFormer | (deferred) | — |
+After Phase-2 diagnosis (S5 and RoMAE collapsed at forced 7.8M + lr=5e-4 + wd=0.01), we switched S5 to its **paper-native recipe**:
 
-Param-matching methodology:
-- Primary levers: `d_model` for transformers, `d_model + n_layers` for SSMs.
-- Tolerance: ±10 % of 7.8 M.
-- `audit/count_params.py` asserts each model is within budget at config time.
-- Final counts: Mamba-MV 7.80 M · RoMAE 7.79 M · mTAN 7.73 M · S5 7.79 M · ContiFormer-reduced 1.45 M (still OOMed — see §6).
+| Knob | Fair default | S5 override | Rationale |
+|---|---|---|---|
+| LR | 5e-4 | **1e-3** | Smith et al. 2023 report lr ∈ [5e-4, 1e-3] for S5 on LRA |
+| Weight decay | 0.01 | **0.05** | Paper uses wd=0.05 for structured SSM parameters |
+| Physical batch | 128 | 32 (accum=4, effective 128) | Parallel-scan activation memory at B·V=384 OOMs on 80GB |
+| SSM-spectral params | — | **excluded from weight decay** | `Lambda`, `log_step`, `D`, `B`, `C` are structured — decaying them harms training |
+
+RoMAE runs at the Mamba defaults (`lr=5e-4`, `wd=0.01`) with paper-native architecture.
+
+Result: at patience=50 with paper-native S5 and RoMAE configs, both models learn robustly (3–5/5 seeds converge), which was **not** the case at forced 7.8M.
 
 ---
 
 ## 4. Baseline wrapper design
 
-All wrappers share the same Lightning interface and the same per-sample JSONL test outputs, so one aggregator processes all models identically. The per-model design decisions below preserve architectural faithfulness while meeting the shared interface.
+Wrappers share a Lightning interface and per-sample JSONL test outputs so one aggregator processes all models identically. Design decisions below preserve architectural faithfulness while meeting the shared interface.
 
 ### 4.1 RoMAE (`romae_forecaster/romae_forecaster.py`) — GREEN
 
 - Uses upstream `RoMAEForPreTraining` unmodified.
 - **Tokenization.** Every observation (one value at one timestamp on one variate) is one token. `tubelet_size=(1,1,1)`, `n_channels=1`, so upstream's `patchify` is a no-op.
 - **Positions.** Two RoPE-ND dimensions: `[timestamp, variate_id]` as float coords. Variate id is cast to float to share the RoPE machinery.
-- **Mask semantics.** We pass `mask = pred_mask` (True = forecast target). The encoder drops these positions; the decoder reconstructs them. **Note the padding convention flip:** RoMAE's upstream code reads `pad_mask == True` as padding (confirmed at `utils.py:209` and `model.py:399`); our datamodule emits `pad_mask == True` as real. The wrapper flips via `pad_mask_romae = ~pad_mask_ours`.
-- **Loss.** Built-in `MSELoss(reduction='none')` is used; it already runs only on masked positions and zeroes padding. This is exactly our forecasting loss.
-- **Targets-as-labels subtlety (critical).** Values are passed **as-is** at pred-mask positions. Zeroing them here collapses `m_x = x[mask]` to zero, training the model to output zero — a bug that silently sets train/val MSE to 0 and test MSE to `Var(y) + E[y]²`. Documented in the file docstring.
+- **Mask semantics.** We pass `mask = pred_mask` (True = forecast target). The encoder drops these positions; the decoder reconstructs them. **Note the padding convention flip:** RoMAE's upstream code reads `pad_mask == True` as padding; our datamodule emits `pad_mask == True` as real. The wrapper flips via `pad_mask_romae = ~pad_mask_ours`.
+- **Loss.** Built-in `MSELoss(reduction='none')` — runs only on masked positions, zeroes padding. Matches our forecasting loss scope.
+- **Targets-as-labels subtlety (critical).** Values are passed **as-is** at pred-mask positions. Zeroing them collapses `m_x = x[mask]` to zero, training the model to output zero — a bug that silently sets train/val MSE to 0 and test MSE to `Var(y) + E[y]²`. Documented in the file docstring.
 - **Eval reconstruction.** `logits[b, i]` corresponds to the i-th True position of `mask[b]` in positional order; we iterate over real pred-mask positions per sample to rebuild y_true / y_pred.
 
-### 4.2 mTAN (`mtan_forecaster/mtan_forecaster.py`) — GREEN
-
-- Standard mTAN: reference-point attention (64 reference points) + bidirectional GRU encoder + Gaussian generative decoder (we use only the reconstruction head, no KL — this is a deterministic forecaster, not the VAE).
-- Masked-input pattern: values at `timestamps >= history` set to zero before the encoder. mTAN's attention over learned ref points then mixes information across the known region into the forecast region.
-- Loss: MSE on `pred_mask == True` only.
-- Param budget hit via `latent_dim` + `rec_hidden`.
-
-### 4.3 S5 (`s5_forecaster/s5_forecaster.py`) — YELLOW (new today)
+### 4.2 S5 (`s5_forecaster/s5_forecaster.py`) — GREEN after paper-native switch
 
 - Upstream: **Kwaijtaal's `s5-pytorch v0.2.1`** port of Smith et al. (ICLR 2023). The port exposes a raw `S5` module whose `forward(signal, step_scale)` accepts per-step Δt. We do **not** use `S5Block` — it does not thread `step_scale` through its forward, which would defeat the point of comparing to Mamba-true-Δt.
 - Wrapper block: `S5TemporalBlock` = Pre-LN + `S5(step_scale=Δt)` + residual + FFN. Transformer-style layout with SSM instead of attention.
-- **Per-variate SSM stack.** Each variate is processed independently by flattening `(B, V)` into the batch dimension: `(B·V, L, D)`. This is the faithful S5 design — S5 has no cross-variate mechanism.
+- **Per-variate SSM stack.** Each variate is processed independently by flattening `(B, V)` into the batch dimension: `(B·V, L, D)`. Faithful to S5's design — S5 has no cross-variate mechanism.
 - **Time signal.** Two routes: (i) a linear sin-cos time embedding concatenated with value at input projection, (ii) the per-step Δt threaded to the SSM as `step_scale`. Duplicate encoding is tolerable; S5's learned-Δ treats `step_scale` as the dominant source.
-- **Masked-input pattern.** Values where `timestamps >= history` zeroed before the SSM (matches mTAN/RoMAE convention).
-- **Batch caveat.** S5's parallel scan stores `O(L)` intermediate states at backward. At physical B=128 on H100-80GB with V=3, the effective batch B·V = 384 exceeds working memory. Dropped to B=32 with `accumulate_grad_batches=4` so the effective recipe batch of 128 is preserved. Documented as a fairness concession: per-step compute is identical; gradient granularity is identical; only sub-batch activation memory differs.
-- Param budget hit at `d_model=384`, `state_dim=96`, 6 layers → 7.79 M.
+- **Masked-input pattern.** Values where `timestamps >= history` zeroed before the SSM (matches RoMAE convention).
+- **Paper-native sizing (Phase 3/4).** `d_model=128`, `state_dim=256`, 6 layers — matches Smith et al. LRA config, ~2.6M params (not forced to 7.8M).
+- **Weight-decay routing.** SSM-spectral params (`Lambda`, `log_step`, `D`, `B`, `C`) excluded from weight decay; only the FFN / projection matrices get `wd=0.05`.
+- **Batch caveat.** Parallel scan stores `O(L)` intermediate states at backward. At physical B=128 on H100-80GB with V=3, effective batch B·V = 384 exceeds working memory. Dropped to B=32 with `accumulate_grad_batches=4` so the recipe batch of 128 is preserved. Documented as a fairness concession: per-step compute is identical; gradient granularity is identical; only sub-batch activation memory differs.
+
+### 4.3 mTAN (`mtan_forecaster/mtan_forecaster.py`) — DROPPED
+
+- Architecture faithfully implemented per Shukla & Marlin 2021: reference-point attention (64 ref points) + bidirectional GRU encoder + Gaussian generative decoder (we used only the reconstruction head, no KL).
+- **Observed failure mode.** mTAN converged to constant-output collapse in 4–5/5 seeds across every configuration we tried:
+  1. Forced 7.8M at `lr=5e-4, wd=0.01`
+  2. Paper-native sizing at `lr=5e-4, wd=0.01`
+  3. Paper-native sizing at `lr=1e-4, wd=0.01` (LR sweep rung)
+  4. Paper-native sizing with timestamp normalization `t / t_max ∈ [0, 1]`
+  5. Paper-native sizing with the `sin(Linear(1, 127)(t))` time embedding removed (custom hot-fix)
+- **Diagnosis.** The `sin(Linear(1, 127)(t))` encoding in mTAN's reference-point attention is scale-sensitive. Our timestamps live in [0, 10]; mTAN was trained on normalized [0, 1]. Even after normalization we could not stabilize learning. The model is a VAE-style architecture designed for imputation / classification, not pure forecasting — the decoder expects latent variability at generation time, which our deterministic forecasting loss fights against.
+- **Decision (2026-04-22).** mTAN dropped from Phase 3 / 4. Wrapper code preserved under `mtan_forecaster/` for future debugging or a different phase. Another transformer-family baseline may be added if time permits.
 
 ### 4.4 Mamba-MV (our model) — target model
 
 - SSM with **true-Δt discretization** (the scientific claim).
 - Additional **cross-variate time-alignment SSM layer** that mixes across variates at shared time points.
-- Three `dt_mode` variants trained in Phase 2 to isolate the claim: `learned` (standard Mamba), `replace` (Δ ← true Δt), `additive` (Δ ← learned Δ + true Δt).
-- Winner by val/MSE on `multisin_med_irreg` is carried to Phases 3 and 4.
+- **Two `dt_mode` variants** trained: `learned` (standard Mamba, ignores batch Δt) and `replace` (Δ ← batch Δt directly). The third variant `additive` (Δ ← learned Δ + batch Δt) was dropped after Phase 2 showed it to be a strict worst-of-both.
 - 7.80 M params at `d_model=256`, `grid_K=128`, balanced per-variate + MV layer counts.
 
 ### 4.5 Bug fix inherited from reference
 
-The colleague's Mamba reference read `self.hparams.history` in `_mask_prediction_inputs`, which diverges from the datamodule's per-sample `batch["history"]` if CLI defaults drift. All four wrappers now consume `batch["history"]` (or `batch["pred_mask"]` directly, which is already built from the datamodule's per-sample history). This ensures every model masks an identical set of positions on the same batch.
+The colleague's Mamba reference read `self.hparams.history` in `_mask_prediction_inputs`, which diverges from the datamodule's per-sample `batch["history"]` if CLI defaults drift. All three wrappers now consume `batch["history"]` (or `batch["pred_mask"]` directly, which is already built from the datamodule's per-sample history). Every model masks an identical set of positions on the same batch.
 
 ### 4.6 Loss-scope identity check
 
-A single fixed-batch unit test passes predictions of zero through every wrapper; all five produce the same nominal MSE, proving loss is summed over the same positions. This rules out the single most common fairness bug in IMTS benchmarks (different denominators).
+A single fixed-batch unit test passes predictions of zero through every wrapper; all three active wrappers (Mamba-MV, S5, RoMAE) produce the same nominal MSE, proving loss is summed over the same positions. This rules out the single most common fairness bug in IMTS benchmarks (different denominators).
 
 ---
 
 ## 5. Evaluation methodology
 
-### 5.1 Metric set (unchanged for paper headline)
+### 5.1 Metric set (unchanged)
 
 Every model reports **target-weighted MSE, MAE, Pearson, R²** globally (across all pred-mask positions pooled over the test set). These are the numbers the paper's tables will show.
 
 Target-weighting = `sum(ss_res) / sum(count)` rather than `mean(per_sample_mse)`:
 - Matches the training loss reduction (MSE over positions, not over samples).
-- Avoids small-sample high-variance bias (a sample with 3 pred-mask points and MSE=1.0 no longer dominates a sample with 60 pred-mask points and MSE=0.1).
-- Pearson and R² remain **sample-averaged** — they are per-sample correlation scores by definition; averaging across samples is the correct reduction.
+- Avoids small-sample high-variance bias.
+- Pearson and R² remain **sample-averaged** — they are per-sample correlation scores by definition.
 
-### 5.2 Per-variate breakdown (added today)
+### 5.2 Per-variate breakdown
 
-For each test sample, the wrapper also writes per-variate: `mse_v{d}`, `mae_v{d}`, `ss_res_v{d}`, `abs_err_sum_v{d}`, `count_v{d}`, `n_pred_v{d}` (or `n_obs_v{d}`). The aggregator pools across seeds and computes:
+Every wrapper emits per-sample `mse_v{d}`, `mae_v{d}`, `ss_res_v{d}`, `abs_err_sum_v{d}`, `count_v{d}` for `d ∈ {0, 1, 2}`. Aggregator pools across seeds:
 ```
 mse_v{d}_tw = Σ_seed ss_res_v{d} / Σ_seed count_v{d}
 mae_v{d}_tw = Σ_seed abs_err_sum_v{d} / Σ_seed count_v{d}
 ```
-Why this matters: v3 is the convex-mix variate, so it is the one a cross-variate model should improve on most. Early Phase 2 signal on `multisin_med_irreg/learned` already shows:
+Why this matters: v3 is the convex-mix variate, so it is the one a cross-variate model should improve on most. Early Phase 2 signal on `multisin_med_irreg/learned`:
 ```
 mamba_mv med_irreg learned n_seeds=3  mse=0.02573 ± 0.00034
                                 v0_tw=0.02863  v1_tw=0.02870  v2_tw=0.01987
 ```
-— v3 is ~30 % lower MSE than v1/v2 before any Phase 3/4 runs. This is the first concrete evidence for the alignment claim.
+— v3 is ~30 % lower MSE than v0/v1 in the same runs, first concrete evidence for the alignment claim.
 
-### 5.3 Phase 4 gap-region slicing (added today)
+### 5.3 Phase 4 gap-region slicing — generalized over all variates
 
-For Phase-4 runs only, wrappers additionally emit per-sample:
+For Phase-4 runs, wrappers emit per-sample keyed by the **sample-specific gapped variate** `d` read from `gapped_variate_index[i][0]`:
 ```
-ss_res_v2_in_gap, abs_err_sum_v2_in_gap, count_v2_in_gap
-ss_res_v2_out_gap, abs_err_sum_v2_out_gap, count_v2_out_gap
+ss_res_v{d}_in_gap, abs_err_sum_v{d}_in_gap, count_v{d}_in_gap
+ss_res_v{d}_out_gap, abs_err_sum_v{d}_out_gap, count_v{d}_out_gap
 ```
-(v2 = v3 in 0-indexed terms.) The aggregator pools these and yields **target-weighted in-gap vs out-gap MSE/MAE** for the gapped variate. This is the headline number for Phase 4: a model that alignment-copies from v1, v2 should hold up inside the gap; a model that treats variates independently should degrade sharply.
+Aggregator's `_phase4_gap_region()` pools across samples and across seeds, loops over `d ∈ {0, 1, 2}`, and yields per-variate target-weighted in-gap vs out-gap MSE/MAE. Two modes:
+
+- **Phase 4-1 (`fixed_v3`):** `d` is always 2 in every sample → the `v2_in_gap` and `v2_out_gap` buckets get all counts; `v0` / `v1` buckets are empty.
+- **Phase 4-2 (`random_uniform`):** `d` varies per sample → all three variates' in-gap / out-gap buckets have ≥ 100 test counts each (enough for stable target-weighted numbers).
+
+This is the headline number for Phase 4: a model that alignment-copies from the other variates should hold up inside the gap; a model that treats variates independently should degrade sharply. Phase 4-2 additionally tests whether the alignment works in the inverse-mixture direction.
 
 ### 5.4 Backwards compatibility
 
-Aggregator's `_per_variate_target_weighted()` falls back to sample-averaged `mse_v{d}_samp` for pre-edit runs (the currently-running Phase 2 jobs that loaded code before the wrapper edits). No re-run of Phase 2 is required for the global headline metrics; per-variate target-weighted numbers get filled in fully from Phase 3 onward.
+Aggregator's `_per_variate_target_weighted()` falls back to sample-averaged `mse_v{d}_samp` for pre-edit runs (the earliest Phase 2 jobs). Phase 3 and 4 have full target-weighted per-variate from the start.
 
 ### 5.5 Statistical significance
 
@@ -232,9 +262,8 @@ Aggregator's `_per_variate_target_weighted()` falls back to sample-averaged `mse
 `eval/aggregate_results.py`:
 - `summarize()` → wide CSV (model × regime × variant, global metrics mean ± std).
 - `_per_variate_target_weighted()` → long CSV with per-variate target-weighted metrics.
-- `_phase4_gap_region()` → long CSV with in-gap/out-gap metrics for Phase 4.
+- `_phase4_gap_region()` → long CSV with in-gap/out-gap metrics, stratified over d ∈ {0, 1, 2}.
 - `paired_significance()` → CSV of Wilcoxon p-values.
-- Output format is unchanged at the top level so the paper table scripts don't need edits.
 
 ---
 
@@ -257,7 +286,7 @@ The cost is **L² in sequence length** from ODE-attention. With `L = 120 · 3 = 
 
 ### 6.2 Methodological precedent
 
-T-PATCHGNN (ICML 2024) also excludes ContiFormer as a baseline on IMTS tasks of this length for the same reason. This is not a silent omission — it is a known methodological boundary. Paper text can state: *"ContiFormer was attempted at six (batch, tolerance, parameter-budget) configurations and OOM'd on all of them on 80 GB H100 with L = 360 flat tokens, consistent with T-PATCHGNN (ICML 2024). We defer it to future work on ≥120 GB accelerators."*
+T-PATCHGNN (ICML 2024) also excludes ContiFormer as a baseline on IMTS tasks of this length for the same reason. Paper text can state: *"ContiFormer was attempted at six (batch, tolerance, parameter-budget) configurations and OOM'd on all of them on 80 GB H100 with L = 360 flat tokens, consistent with T-PATCHGNN (ICML 2024). We defer it to future work on ≥120 GB accelerators."*
 
 ### 6.3 Documentation
 
@@ -267,74 +296,69 @@ T-PATCHGNN (ICML 2024) also excludes ContiFormer as a baseline on IMTS tasks of 
 
 ## 7. Infrastructure
 
-### 7.1 SLURM layout
+### 7.1 SLURM layout (current)
 
-9 sbatch scripts under `imts_benchmark/scripts/`, all updated to:
-- Write to `output/log/imts_benchmark_v2/...`.
-- Read from `data_correct/`, `data_correct_async/`, or `data_correct_gap/` depending on phase.
-- Email on END/FAIL: `--mail-user=dhjrzzang@gmail.com`, `--mail-type=END,FAIL`.
+Under `imts_benchmark/scripts/`. Each phase has its own trio of sbatch files:
 
-Array layout (Phase 2):
-- `run_mamba_mv.sbatch` : array 1–60 (3 dt_mode × 4 regimes × 5 seeds)
-- `run_romae.sbatch`    : array 1–20 (4 × 5)
-- `run_mtan.sbatch`     : array 1–20
-- `run_s5.sbatch`       : array 1–20 (physical B=32, accum=4)
-- `run_contiformer.sbatch` : **header banner: DEFERRED** — not launched
+| Script | Array size | Mapping |
+|---|---|---|
+| `run_mamba_mv_phase{3,4_1,4_2}.sbatch` | 1–40 | 4 regimes × 2 `dt_mode` ({learned, replace}) × 5 seeds |
+| `run_s5_phase{3,4_1,4_2}.sbatch` | 1–20 | 4 regimes × 5 seeds |
+| `run_romae_phase{3,4_1,4_2}.sbatch` | 1–20 | 4 regimes × 5 seeds |
 
-Phases 3 and 4 reuse the same scripts with `--data_root data_correct_async` / `--data_correct_gap` and `--log_root .../phase3_async` / `.../phase4_gap`. Each phase is 100 runs (20 × 5 kept models) when the Phase-2 dt_mode winner is frozen.
+Data / log routing:
+- `run_*_phase3.sbatch` → `data_correct_async/`, logs under `phase3/`
+- `run_*_phase4_1.sbatch` → `data_correct_gap/`, logs under `phase4_1/`
+- `run_*_phase4_2.sbatch` → `data_correct_gap_random/`, logs under `phase4_2/`
 
-Total run count: 60 + 4 × 20 (Phase 2) + 5 × 20 (Phase 3) + 5 × 20 (Phase 4) = 140 + 100 + 100 = **340 runs**.
+Per-phase run count: 40 + 20 + 20 = **80 runs per phase** × 3 active phases = **240 runs** total for the Phase 3/4 suite. Phase 2 had 140 runs (60 Mamba × 3 dt_modes + 4 × 20 baselines with mTAN still included).
 
 ### 7.2 Conda environments
 
-- PyTorch + CUDA + mamba_ssm + torchdiffeq + torchcde: `/projects/b1094/StarEmbed/pythonenvs/mamba`
-- (JAX-based S5 was considered; we chose the PyTorch port instead to share the env, simplifying the Lightning integration.)
+- PyTorch + CUDA + `mamba_ssm` + `s5-pytorch`: `/projects/b1094/StarEmbed/pythonenvs/mamba`
+  — All three active models (Mamba-MV, S5, RoMAE) run in this env. Earlier S5-JAX env (`pythonenvs/s5-jax`) was not used in the end; we went with `s5-pytorch` for Lightning integration.
 
 ### 7.3 Storage
 
-- Datasets: `ssm_dk/data_correct/`, `data_correct_async/`, `data_correct_gap/`.
-- Logs: `output/log/imts_benchmark_v2/{phase2,phase3_async,phase4_gap}/<model>/<regime>/<variant>/seed_<N>/` — each folder contains `test_metrics.csv` and `per_sample.jsonl`.
+- Datasets: `ssm_dk/{data_correct, data_correct_async, data_correct_gap, data_correct_gap_random}/`.
+- Logs: `output/log/imts_benchmark_v2/{phase2, phase3, phase4_1, phase4_2}/<model>/<regime>/<variant>/seed<N>/` — each folder contains `test_metrics.csv` and `per_sample.jsonl`.
 - Per-variate metric columns live inside `per_sample.jsonl`; global metrics in `test_metrics.csv`.
 
 ---
 
 ## 8. Audit deliverables
 
-- `audit/count_params.py` — instantiates all 5 models, asserts ±10 % of 7.8 M budget. Run before each phase.
-- `audit/baseline_spec_romae.md` — upstream-contract check for RoMAE (GREEN).
-- `audit/baseline_spec_mtan.md` — GREEN.
-- `audit/baseline_spec_s5.md` — YELLOW with caveats on the s5-pytorch port and B=32 activation concession.
-- `audit/baseline_spec_contiformer.md` — YELLOW → deferred, linked to deferral note.
+- `audit/count_params.py` — instantiates all models; still prints Phase-2-era 7.8M targets for historical reference.
+- `audit/baseline_spec_romae.md` — GREEN, current.
+- `audit/baseline_spec_s5.md` — updated to paper-native config; GREEN after patience=50.
+- `audit/baseline_spec_mtan.md` — **DROPPED** (persistent collapse).
+- `audit/baseline_spec_contiformer.md` — YELLOW → deferred.
 - `audit/contiformer_deferral_note.md` — 6-config ledger and methodology justification.
-- `audit/baseline_validation_report.md` — 5 models × 4 checks (upstream contract, 20-epoch behavior smoke, noise-free sanity benchmark, cross-model init parity). All passing for the 4 kept models.
+- `audit/baseline_validation_report.md` — 5 models × 4 checks (upstream contract, 20-epoch behavior smoke, noise-free sanity benchmark, cross-model init parity). Baseline-validation fields for mTAN / ContiFormer flagged "deferred".
 
 ---
 
 ## 9. Paper-relevant decisions to carry forward
 
-Things to cite or fix in the Methods/Appendix:
-
-1. **Identical recipe.** AdamW(5e-4, wd=0.01), warmup 100, cosine to 1600, effective batch 128, fp32. Deviations (S5's physical B=32 accum=4) are accumulator-only, no optimizer drift.
-2. **Identical loss scope.** MSE over `pred_mask`-True positions, target-weighted at aggregation. Fixed-batch unit test confirms all models sum the same positions.
-3. **Param parity ±10 %.** Every kept model lives in 7.0–8.6 M.
+1. **Shared recipe with one principled deviation.** AdamW + warmup 100 + cosine to 1600 + effective batch 128 + fp32 + patience 50 for all models. S5 runs at paper-native `lr=1e-3, wd=0.05` (documented — forced-parity recipe caused S5 to fail to learn).
+2. **Identical loss scope.** MSE over `pred_mask`-True positions, target-weighted at aggregation. Fixed-batch unit test confirms all active models sum the same positions.
+3. **Config honesty, not forced param parity.** Mamba-MV at 7.80M; baselines at whatever config the original paper validated. Report param counts honestly in the methods table.
 4. **History = 8.0.** Diverges from colleague's reference (7.0) by user choice; continuous with v1 runs.
 5. **v3 = convex mix.** The scientific lever — v3 is analytically recomputed at async timestamps in Phase 3, not interpolated.
-6. **Gap on v3 in Phase 4.** Option C (always v3), one gap per sample, length 1.5–3.0, start 2.5–6.0.
-7. **S5 via PyTorch port.** Kwaijtaal s5-pytorch v0.2.1, custom Pre-LN block (upstream `S5Block` drops `step_scale`).
+6. **Phase 4 split.** Phase 4-1 (fixed_v3) and Phase 4-2 (random_uniform); they test forward and inverse directions of the convex mixture respectively. Run both and report both.
+7. **S5 via PyTorch port.** Kwaijtaal `s5-pytorch` v0.2.1, custom Pre-LN block (upstream `S5Block` drops `step_scale`). Weight decay excluded from SSM-spectral params.
 8. **ContiFormer deferral.** 6 OOM configs + T-PATCHGNN precedent; paper caveat paragraph drafted in §6.2.
-9. **Metric conventions.** Target-weighted MSE/MAE + sample-averaged Pearson/R². Headline unchanged across phases.
-10. **Per-variate and in-gap/out-gap** breakdowns added today; Phase 2 falls back to sample-averaged per-variate; Phase 3–4 have full target-weighted per-variate from the start.
+9. **mTAN dropped.** Persistent collapse across every sizing / LR / timestamp-normalization config tried. Report as a failed baseline or omit entirely from the final table (decision deferred to results).
+10. **Metric conventions.** Target-weighted MSE/MAE + sample-averaged Pearson/R². Per-variate and in-gap/out-gap breakdowns stratified over d ∈ {0, 1, 2}. Unchanged across phases.
 
 ---
 
 ## 10. Current status and next steps
 
-- **Phase 2 training:** ~90 of 120 runs pending/running (Mamba array 1–60; RoMAE/mTAN/S5 arrays 1–20 each). Early partial aggregation already shows the v3 advantage on Mamba-MV. ContiFormer array not launched.
-- **Aggregation:** `aggregate_results.py` can be run on partial results; it skips missing cells.
-- **Once Phase 2 completes:** write `RESULTS_phase2.md` (4 regime-tables × 4 models × 4 metrics, plus Mamba dt_mode ablation); pick dt_mode winner by val/MSE on `multisin_med_irreg`.
-- **Phase 3 launch:** 100 runs on `data_correct_async/` with dt_mode winner + RoMAE + mTAN + S5. Expected outcome: v3 MSE advantage for Mamba-MV should widen vs baselines.
-- **Phase 4 launch:** 100 runs on `data_correct_gap/`. Expected outcome: Mamba-MV's in-gap v3 MSE should be markedly lower than baselines that lack cross-variate mixing.
-- **Post-Phase 4:** if ≥120 GB accelerator becomes available, revisit ContiFormer with the reduced-arch config preserved in `count_params.py`.
+- **Phase 2:** complete. `RESULTS_phase2.md` written. At paper-native baseline configs + patience=50, the full regime sweep for Mamba-MV (learned, replace) vs S5, RoMAE is tabulated; mTAN dropped. Phase 2 identified S5 as the strongest baseline (not RoMAE as earlier suspected at forced 7.8M).
+- **Phase 3, 4-1, 4-2:** in training. 240 runs across the three phases submitted as 9 SLURM arrays (Mamba-MV × {P3, P4-1, P4-2} @ 40 each + S5 × 3 @ 20 each + RoMAE × 3 @ 20 each). All at current non-HPO'd Mamba config.
+- **Decision gate (post-Phase 4).** If Mamba `replace` still loses to S5 on the majority of irregular regimes in Phase 3 or 4 → trigger HPO per `docs/HPO_PLAN.md`. If Mamba wins on Phase 3/4 regimes → proceed to paper-writing without HPO.
+- **HPO_PLAN.md** saved separately so it survives context compaction. Stage 1 (90 runs: 5 lr × 3 d_model × 2 dt_mode × 3 seeds on `multisin_med_irreg` Phase 3) is the first gate if triggered.
 
 ---
 
@@ -346,4 +370,6 @@ Things to cite or fix in the Methods/Appendix:
 | `docs/archive/2026-04-20_RESULTS_mamba_vs_romae.md` | 2026-04-20 | Initial Mamba vs RoMAE results (long-gap data) | Archived — superseded |
 | `docs/archive/2026-04-21_BUILD_REPORT_imts_benchmark.md` | 2026-04-21 | 5-model benchmark build on `data_correct` | Archived — superseded |
 | `docs/archive/2026-04-21_RESULTS_imts_benchmark.md` | 2026-04-21 | Phase-2 partial results, pre-per-variate | Archived — superseded |
-| `docs/REPORT_consolidated_2026-04-22.md` | 2026-04-22 | **This document.** Phases 2–4, per-variate & gap-region metrics, ContiFormer deferral | **Active** |
+| `docs/REPORT_consolidated_2026-04-22.md` | 2026-04-22 (initial); 2026-04-23 (baselines / Phase-4 split) | Phases 2–4, per-variate & gap-region metrics, ContiFormer deferral, mTAN drop, S5 paper-native | **Active** |
+| `docs/HPO_PLAN.md` | 2026-04-22 | Rigorous 3-stage HPO design | **Active (gate: Phase 3/4 result)** |
+| `docs/RESULTS_phase2.md` | 2026-04-22 | Phase 2 final table after patience=50 + paper-native baselines | **Active** |

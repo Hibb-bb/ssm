@@ -1,7 +1,23 @@
 # mTAN Baseline Spec — Upstream-Contract Audit
 
-**Date**: 2026-04-21
-**Verdict**: **GREEN** — mTAN is being used correctly for forecasting.
+**Date**: 2026-04-21 (initial) · 2026-04-22 (status revision)
+**Verdict**: **DROPPED** — wrapper is still implemented correctly against the upstream contract (the original GREEN audit stands on code-contract grounds), but every training config we tried in Phase 2 collapsed to constant-output predictions. Removed from Phase 3 / 4 / 4-1 / 4-2 runs.
+
+## Why dropped (2026-04-22 decision)
+
+Five configurations tried on `multisin_med_irreg`, all 4–5/5 seeds collapsed (test MSE ≈ `Var(y)`):
+
+1. Forced 7.8M (`latent_dim=128, rec_hidden=384`) at `lr=5e-4, wd=0.01`, patience=20
+2. Paper-native (`latent_dim=40, rec_hidden=64, gen_hidden=50`) at `lr=5e-4, wd=0.01`, patience=50
+3. Paper-native at `lr=1e-4, wd=0.01`, patience=50
+4. Paper-native with timestamp normalization `t → t / t_max ∈ [0, 1]`, patience=50
+5. Paper-native with `sin(Linear(1, 127)(t))` time embedding removed (hot-fix), patience=50
+
+**Suspected root cause**: mTAN's `sin(Linear(1, 127)(t))` reference-attention time encoding is scale-sensitive, and the architecture is designed for the *imputation* objective (MSE on randomly missing interior points with a VAE prior), not strict forecasting. The deterministic-forecasting use-case fights the VAE decoder's expectation of latent stochasticity at generation time. Even with time normalized to [0, 1] and the VAE KL suppressed, the model did not learn.
+
+**Status of the wrapper code.** Preserved under `mtan_forecaster/` for reference and potential future revival. The `baseline_spec` below documents the original contract audit (still correct); it is retained so anyone reviving mTAN has the wrapper design notes.
+
+---
 
 ## Upstream summary
 
