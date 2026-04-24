@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Generated datasets
+/data_correct_async/
+/data_correct/
+
+# Sweep / training outputs
+/output/
+
+# Weights & Biases (offline runs)
+/wandb/
+**/wandb/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
