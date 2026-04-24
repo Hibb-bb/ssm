@@ -373,3 +373,65 @@ Per-phase run count: 40 + 20 + 20 = **80 runs per phase** × 3 active phases = *
 | `docs/REPORT_consolidated_2026-04-22.md` | 2026-04-22 (initial); 2026-04-23 (baselines / Phase-4 split) | Phases 2–4, per-variate & gap-region metrics, ContiFormer deferral, mTAN drop, S5 paper-native | **Active** |
 | `docs/HPO_PLAN.md` | 2026-04-22 | Rigorous 3-stage HPO design | **Active (gate: Phase 3/4 result)** |
 | `docs/RESULTS_phase2.md` | 2026-04-22 | Phase 2 final table after patience=50 + paper-native baselines | **Active** |
+
+---
+
+# Addendum — 2026-04-24
+
+Since the 2026-04-23 revision, four concrete items landed. This addendum records them without rewriting the main report, so the per-phase results sections stay stable.
+
+## A1. Audit C — shared-grid decay is a no-op
+
+Refutes the hypothesis that Mamba-MV's `exp(−γ·ρ)` shared-grid approximation is the reason S5 wins Phase 2/3 × high_irreg. Across 5 trained `replace` checkpoints on Phase 3 × high_irreg:
+
+- Trained `γ = softplus(γ_raw) ≈ 0.049` across all seeds / variates / channels → **unchanged from initialization** (`softplus(−3.0)`).
+- `ρ` on test set: mean 0.054, max 0.18 (bounded by 2× grid spacing of 10/128).
+- Implied decay factor `exp(−γ·ρ)`: mean **0.997**, p10 = 0.995, 0% of (slot, channel) pairs have decay < 0.5.
+
+The model learned to bypass the decay entirely — the staleness `ρ` feature injected sinusoidally into Stage-3 `VariableAxisAttention` is sufficient, making the multiplicative decay redundant. The bottleneck attribution shifts to **Stage 1 (per-variate SSM)** capacity: Mamba-MV uses `d_state=16` with S6 selective init and real-diagonal A; S5 uses P=256 with HiPPO-N and complex-diagonal Λ.
+
+**Implication for the paper**: kills the "your approximation is lossy" reviewer critique. New framing: the fusion mechanism successfully decouples cross-variate alignment from per-variate dynamics.
+
+Full details at [`../audit/AUDIT_C_gamma_rho.md`](../audit/AUDIT_C_gamma_rho.md). Script at [`../audit/audit_c_gamma_rho.py`](../audit/audit_c_gamma_rho.py).
+
+## A2. `concat` dt_mode added to Mamba-MV
+
+`imts_benchmark/mamba_mv/mamba_block.py` `MambaIrregularBlock` now supports three time-injection modes (was two in v1 sweep):
+
+- `replace` — `Δ = dt_real` (strips selective mechanism)
+- `additive` — `Δ = softplus(learned + dt_real)`
+- **`concat`** (new) — `Δ = softplus(W_dt · [dt_raw; dt_real] + b)`. Feeds `dt_real` as an additional input feature to the learned Δ projection. Mamba's selective mechanism is preserved and now sees physical time as an input. Closest variant to the `multiplicative` mode suggested by the Mamba paper's Theorem 1 reasoning (Δ as selection gate).
+
+The HPO sweep below tests all three.
+
+## A3. HPO v2 → pipeline submitted 2026-04-24
+
+HPO_PLAN.md (v2, active) was operationalized as a 6-job SLURM dependency chain submitted 2026-04-24:
+
+| Stage | Job | Depends on | Grid / Purpose |
+|---|---|---|---|
+| 1 | HPO Phase 3 (array 1-27) | — | `dt_mode × lr × batch_size`, seed=1, multisin_high_irreg |
+| 2 | HPO Phase 4-2 (array 1-27) | — | same grid on gap_random / high_irreg |
+| 3 | Aggregate + pick winner (CPU) | afterany 1, 2 | per-phase winner, min val/mse, tiebreak smallest lr |
+| 4 | Winner confirm Phase 3 (array 1-5) | afterok 3 | 5-seed confirmation at Phase-3 winner HPs |
+| 5 | Winner confirm Phase 4-2 (array 1-5) | afterok 3 | 5-seed confirmation at Phase-4-2 winner HPs |
+| 6 | Final comparison (CPU) | afterany 4, 5 | appends tuned rows to `phase{3,4_2}_summary_wide.csv`; writes `HPO_COMPARISON_*.md` |
+
+Grid per phase: `dt_mode ∈ {learned, replace, concat} × lr ∈ {1e-4, 5e-4, 2e-3} × bs ∈ {64, 128, 256}` = 27 cells. Total: 54 HPO + 10 confirmation + 2 CPU = 66 SLURM jobs. W&B online to `magicslabnorthwestern/TSKing` project.
+
+**Entry point**: `imts_benchmark/scripts/submit_full_hpo_pipeline.sh`. Aggregator: `eval/aggregate_hpo_pick_winner.py`. Comparison: `eval/compare_winner_vs_baseline.py`.
+
+## A4. Per-phase winner (not joint)
+
+After discussion, the HPO picks **two separate winners** — one optimizing Phase 3 × high_irreg, one optimizing Phase 4-2 × high_irreg — not a single joint winner. Rationale: matches how baselines are reported per-phase in `phase{3,4_2}_summary_wide.csv`, and lets us see if the `dt_mode` reversal (`replace` vs `learned` winning different phases) persists after HP tuning. Trade-off: messier paper story ("we tuned per phase") but more informative mechanically.
+
+## A5. Scope
+
+The HPO is restricted to `multisin_high_irreg` only. Other regimes (regular, low_irreg, med_irreg) are cited in Phase 2/3/4 results but not re-tuned. This matches the user's 2026-04-23 focus decision.
+
+## A6. Pending artifacts (when HPO completes)
+
+- [ ] `output/log/.../hpo_mamba_mv/phase{3,4_2}/hpo_ranked.csv` — 27 cells ranked by min val/mse
+- [ ] `output/log/.../hpo_mamba_mv/phase{3,4_2}/winner_config.json` — chosen `(dt_mode, lr, bs)` per phase
+- [ ] `HPO_COMPARISON_phase3_high_irreg.md`, `HPO_COMPARISON_phase4_2_high_irreg.md` — tuned Mamba-MV vs S5/RoMAE comparison tables
+- [ ] New `variant=hpo_tuned_{dt_mode}` rows appended to `phase{3,4_2}_summary_wide.csv`
