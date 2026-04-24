@@ -39,7 +39,10 @@ from imts_benchmark.shared_config.wandb_lightning import (
 from imts_benchmark.shared_data.multivariate_datamodule import (
     MultivariateSinusoidalDataModule,
 )
-from imts_benchmark.mamba_mv.multivariate_forecaster import MultivariateMambaForecaster
+from imts_benchmark.mamba_mv.multivariate_forecaster import (
+    MultivariateMambaForecaster,
+    MultivariateMambaSandwichForecaster,
+)
 
 
 def main():
@@ -55,6 +58,17 @@ def main():
     )
     parser.add_argument("--d_model", type=int, default=384)
     parser.add_argument("--d_hidden", type=int, default=384)
+    parser.add_argument(
+        "--mamba_arch",
+        type=str,
+        default="standard",
+        choices=("standard", "sandwich"),
+        help="standard: n_perv_layer × irregular SSM, n_fusion_blocks × (attn+grid mamba). "
+        "sandwich: same kwargs but adds n_tail_grid_mamba extra TemporalMambaOnGrid "
+        "after fusion; canonical sandwich uses --n_perv_layer 2 --n_fusion_blocks 2 "
+        "(defaults below stay 3,3 for standard).",
+    )
+    parser.add_argument("--n_tail_grid_mamba", type=int, default=2)
     parser.add_argument("--n_perv_layer", type=int, default=3)
     parser.add_argument("--n_fusion_blocks", type=int, default=3)
     parser.add_argument("--n_heads_varattn", type=int, default=4)
@@ -68,7 +82,7 @@ def main():
     pl.seed_everything(args.seed, workers=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    model = MultivariateMambaForecaster(
+    model_kw = dict(
         d_model=args.d_model,
         d_hidden=args.d_hidden,
         n_vars=args.n_vars,
@@ -88,6 +102,13 @@ def main():
         num_training_steps=args.num_training_steps,
         history=args.history,
     )
+    if args.mamba_arch == "sandwich":
+        model = MultivariateMambaSandwichForecaster(
+            n_tail_grid_mamba=args.n_tail_grid_mamba,
+            **model_kw,
+        )
+    else:
+        model = MultivariateMambaForecaster(**model_kw)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total trainable params: {n_params:,}")
 
@@ -114,6 +135,10 @@ def main():
     ]
 
     wandb_logger = build_wandb_logger(args, extra_config={"n_params": n_params})
+    # Regime is not in LightningModule.save_hyperparameters(); log it once as W&B
+    # config (same path as model hparams), not as a time-series metric.
+    if wandb_logger is not False:
+        wandb_logger.log_hyperparams({"regime": args.regime})
 
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
@@ -172,7 +197,9 @@ def main():
     for k, v in metrics_row.items():
         print(f"  {k}: {v}")
 
-    log_wandb_run_summary(wandb_logger, metrics_row)
+    # Keep regime in wandb.config only (see log_hyperparams above), not run/regime scalars.
+    wandb_summary = {k: v for k, v in metrics_row.items() if k != "regime"}
+    log_wandb_run_summary(wandb_logger, wandb_summary)
 
 
 if __name__ == "__main__":

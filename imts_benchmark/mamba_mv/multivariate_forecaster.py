@@ -11,6 +11,7 @@ Pipeline:
             |
             v  L times: VariableAxisAttention then TemporalMambaOnGrid
     H^(L) : [B, K, V, D_model]
+    (``MultivariateMambaSandwichForecaster`` adds extra grid-only Mamba tail.)
             |
             v  (query readout: per-(variate,time) prediction via learnable decay + per-variate head)
     preds : [B, V, L]
@@ -326,3 +327,79 @@ class MultivariateMambaForecaster(pl.LightningModule):
                 "frequency": 1,
             },
         }
+
+
+class MultivariateMambaSandwichForecaster(MultivariateMambaForecaster):
+    """Sandwich stack: irregular per-variate SSM → grid → fusion → tail grid Mamba.
+
+    Default layout (all overridable via the same kwargs as
+    ``MultivariateMambaForecaster``):
+
+    - ``n_perv_layer=2``: two irregular (per-variate) Mamba layers before alignment.
+    - ``n_fusion_blocks=2``: two cross-variate ``VariableAxisAttention`` +
+      ``TemporalMambaOnGrid`` pairs on the shared grid.
+    - ``n_tail_grid_mamba=2``: two extra ``TemporalMambaOnGrid`` blocks on the
+      grid only (no attention between them), after the fusion pairs.
+
+    Lightning hooks, loss, and readout match the parent class; only ``__init__``
+    and ``forward`` differ.
+    """
+
+    def __init__(
+        self,
+        n_tail_grid_mamba: int = 2,
+        n_perv_layer: int = 2,
+        n_fusion_blocks: int = 2,
+        **kwargs,
+    ):
+        super().__init__(
+            n_perv_layer=n_perv_layer,
+            n_fusion_blocks=n_fusion_blocks,
+            **kwargs,
+        )
+        self.tail_grid_mamba = nn.ModuleList([
+            TemporalMambaOnGrid(
+                d_model=self.hparams["d_model"],
+                d_state=self.hparams["d_state"],
+                d_conv=self.hparams["d_conv"],
+                expand=self.hparams["expand"],
+            )
+            for _ in range(n_tail_grid_mamba)
+        ])
+
+    def forward(self, batch):
+        values = batch["values"]
+        timestamps = batch["timestamps"]
+        deltat = batch["deltat"]
+        valid_mask = batch["valid_mask"]
+        history = batch["history"]
+
+        masked_values, _ = self._mask_prediction_inputs(
+            values, timestamps, valid_mask, history
+        )
+
+        h_pv = self.perv_ssm(masked_values, deltat, valid_mask)
+        grid_out = self.grid(h_pv, timestamps, valid_mask)
+        H = grid_out["h0"]
+        avail = grid_out["avail"]
+        rho = grid_out["rho"]
+
+        for attn, mamba in zip(self.fusion_attn, self.fusion_mamba):
+            H = attn(H, avail, rho)
+            H = mamba(H)
+        for m in self.tail_grid_mamba:
+            H = m(H)
+
+        B, V, L = values.shape
+        query_times = timestamps.reshape(B, V * L)
+        query_variate = (
+            torch.arange(V, device=values.device)
+            .view(1, V, 1)
+            .expand(B, V, L)
+            .reshape(B, V * L)
+        )
+        query_valid = valid_mask.reshape(B, V * L)
+
+        preds_flat = self.readout(H, query_times, query_variate, query_valid)
+        preds = preds_flat.view(B, V, L)
+        return preds
