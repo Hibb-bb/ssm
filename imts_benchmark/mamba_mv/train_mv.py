@@ -54,7 +54,7 @@ def main():
         "--dt_mode",
         type=str,
         default="replace",
-        choices=["learned", "replace", "additive"],
+        choices=["learned", "replace", "additive", "concat"],
     )
     parser.add_argument("--d_model", type=int, default=384)
     parser.add_argument("--d_hidden", type=int, default=384)

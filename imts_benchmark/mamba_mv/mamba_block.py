@@ -5,7 +5,9 @@ Provides:
   MambaBlock         - standard Mamba (fully-learned delta)
   MambaIrregularBlock - accepts external delta_t for irregular time series
                         mode="replace": use true dt as delta (Option A)
-                        mode="additive": delta = learned + true dt (Option C)
+                        mode="additive": delta = softplus(learned + true dt) (Option C)
+                        mode="concat": project [dt_raw || delta_t] -> learned delta
+                                      (no additive merge; true gap is an input feature)
 """
 
 import math
@@ -179,12 +181,24 @@ class MambaIrregularBlock(MambaBlock):
 
     mode="replace":  delta = broadcast(delta_t_real) to all d_inner channels
     mode="additive": delta = softplus(learned_dt + broadcast(delta_t_real))
+    mode="concat":   concat per-step delta_t to dt_raw; dt_proj is (dt_rank+1) -> d_inner;
+                     delta = softplus(projection + bias) (learned path depends on true gap)
     """
 
     def __init__(self, *args, dt_mode: str = 'replace', **kwargs):
         super().__init__(*args, **kwargs)
-        assert dt_mode in ('replace', 'additive')
+        assert dt_mode in ('replace', 'additive', 'concat')
         self.dt_mode = dt_mode
+
+        if dt_mode == 'concat':
+            old = self.dt_proj
+            self.dt_proj = nn.Linear(self.dt_rank + 1, self.d_inner, bias=True)
+            with torch.no_grad():
+                self.dt_proj.weight[:, : self.dt_rank].copy_(old.weight)
+                self.dt_proj.bias.copy_(old.bias)
+            nn.init.zeros_(self.dt_proj.weight[:, self.dt_rank :])
+            if hasattr(old.bias, '_no_reinit'):
+                self.dt_proj.bias._no_reinit = True
 
     def forward(self, hidden_states, delta_t=None):
         assert delta_t is not None, 'MambaIrregularBlock requires delta_t'
@@ -219,12 +233,23 @@ class MambaIrregularBlock(MambaBlock):
 
         if self.dt_mode == 'replace':
             dt = dt_real
-        else:
-            dt_raw = x_dbl[:, :self.dt_rank]
+        elif self.dt_mode == 'additive':
+            dt_raw = x_dbl[:, : self.dt_rank]
             dt_learned = self.dt_proj.weight @ dt_raw.t()
             dt_learned = rearrange(dt_learned, 'd (b l) -> b d l', l=seqlen)
             dt_learned = dt_learned + self.dt_proj.bias[:, None]
             dt = F.softplus(dt_learned + dt_real)
+        elif self.dt_mode == 'concat':
+            dt_raw = x_dbl[:, : self.dt_rank]
+            dt_feat = rearrange(delta_t.float().clamp(min=1e-6), 'b l -> (b l) 1')
+            dt_feat = dt_feat.to(dtype=dt_raw.dtype)
+            dt_in = torch.cat([dt_raw, dt_feat], dim=-1)
+            dt_learned = self.dt_proj.weight @ dt_in.t()
+            dt_learned = rearrange(dt_learned, 'd (b l) -> b d l', l=seqlen)
+            dt_learned = dt_learned + self.dt_proj.bias[:, None]
+            dt = F.softplus(dt_learned)
+        else:
+            raise RuntimeError(f'unexpected dt_mode={self.dt_mode!r}')
 
         y = selective_scan(x, dt, A, B, C, self.D.float(), z=z)
         y = rearrange(y, 'b d l -> b l d')
