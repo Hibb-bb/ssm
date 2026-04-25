@@ -31,7 +31,11 @@ _SSM_DK = _THIS_DIR.parents[1]
 if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
-from imts_benchmark.shared_config.fair_defaults import add_fair_args
+from imts_benchmark.shared_config.fair_defaults import (
+    add_fair_args,
+    apply_auto_meta,
+    derive_phase_tags,
+)
 from imts_benchmark.shared_config.wandb_lightning import (
     build_wandb_logger,
     log_wandb_after_fit,
@@ -57,6 +61,7 @@ def main():
     parser.add_argument("--p_rope_val", type=float, default=0.75)
 
     args = parser.parse_args()
+    args = apply_auto_meta(args)
     pl.seed_everything(args.seed, workers=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -102,6 +107,8 @@ def main():
     ]
 
     wandb_logger = build_wandb_logger(args, extra_config={"n_params": n_params})
+    if wandb_logger is not False:
+        wandb_logger.log_hyperparams(derive_phase_tags(args))
 
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,

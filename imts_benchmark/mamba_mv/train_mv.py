@@ -30,7 +30,11 @@ _SSM_DK = _THIS_DIR.parents[1]  # .../ssm_dk
 if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
-from imts_benchmark.shared_config.fair_defaults import add_fair_args
+from imts_benchmark.shared_config.fair_defaults import (
+    add_fair_args,
+    apply_auto_meta,
+    derive_phase_tags,
+)
 from imts_benchmark.shared_config.wandb_lightning import (
     build_wandb_logger,
     log_wandb_after_fit,
@@ -79,6 +83,7 @@ def main():
     parser.add_argument("--n_freq", type=int, default=8)
 
     args = parser.parse_args()
+    args = apply_auto_meta(args)
     pl.seed_everything(args.seed, workers=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -135,10 +140,10 @@ def main():
     ]
 
     wandb_logger = build_wandb_logger(args, extra_config={"n_params": n_params})
-    # Regime is not in LightningModule.save_hyperparameters(); log it once as W&B
-    # config (same path as model hparams), not as a time-series metric.
+    # Log semantic experiment-axis fields as W&B config so runs can be filtered
+    # by phase / irregularity in the dashboard (raw data_root paths don't group).
     if wandb_logger is not False:
-        wandb_logger.log_hyperparams({"regime": args.regime})
+        wandb_logger.log_hyperparams(derive_phase_tags(args))
 
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,

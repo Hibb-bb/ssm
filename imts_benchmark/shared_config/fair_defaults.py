@@ -51,18 +51,20 @@ VAL_BATCH_SIZE = 32
 NUM_WORKERS = 2
 
 SEEDS = (1, 2, 3, 4, 5)
-REGIMES = (
+MULTISIN_REGIMES = (
     "multisin_regular",
     "multisin_low_irreg",
     "multisin_med_irreg",
     "multisin_high_irreg",
 )
+REAL_REGIMES = ("physionet", "activity", "ushcn")
+REGIMES = (*MULTISIN_REGIMES, *REAL_REGIMES)
 
 
 def add_fair_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Attach the fair-comparison knobs. Both trainers call this."""
     parser.add_argument("--data_root", type=str, default=DATA_ROOT_DEFAULT)
-    parser.add_argument("--regime", type=str, required=True, choices=REGIMES)
+    parser.add_argument("--regime", type=str, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
 
@@ -86,6 +88,16 @@ def add_fair_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--history", type=float, default=HISTORY)
     parser.add_argument("--t_max", type=float, default=T_MAX)
     parser.add_argument("--n_vars", type=int, default=N_VARS)
+
+    # When set, trainer reads {data_root}/{regime}/norm_stats.json and overrides
+    # n_vars / history / t_max (mapped from time_max). Used for real datasets
+    # (physionet, activity, ushcn) where these vary per-dataset; the explicit
+    # CLI flags above remain as escape hatches.
+    parser.add_argument(
+        "--auto_meta",
+        action="store_true",
+        help="Override n_vars/history/t_max from {data_root}/{regime}/norm_stats.json.",
+    )
 
     # fp32 everywhere: matches the canonical univariate Mamba baseline
     # (MambaIrregularBlock forces dt to fp32 internally, which trips the CUDA
@@ -120,3 +132,47 @@ def add_fair_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 def regime_data_path(data_root: str, regime: str) -> Path:
     return Path(data_root) / regime
+
+
+def apply_auto_meta(args: argparse.Namespace) -> argparse.Namespace:
+    """When --auto_meta is set, override args.n_vars/history/t_max from the
+    dataset's norm_stats.json. Called by each trainer after argparse.
+    """
+    if not getattr(args, "auto_meta", False):
+        return args
+    import json
+    meta_path = Path(args.data_root) / args.regime / "norm_stats.json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    args.n_vars = int(meta["n_vars"])
+    args.history = float(meta["history"])
+    args.t_max = float(meta["time_max"])
+    print(
+        f"[auto_meta] regime={args.regime}: n_vars={args.n_vars} "
+        f"history={args.history} t_max={args.t_max}"
+    )
+    return args
+
+
+# Map a data_root basename to a human-readable phase tag for W&B grouping.
+PHASE_MAP = {
+    "data_correct_sync": "phase2",
+    "data_correct_async": "phase3",
+    "data_correct_gap": "phase4_1",
+    "data_correct_gap_random": "phase4_2",
+    "tpatchgnn_data": "phase5_real",
+}
+
+
+def derive_phase_tags(args: argparse.Namespace) -> dict:
+    """Return {'regime', 'phase', 'irregularity'} for W&B log_hyperparams.
+    For multisin regimes, irregularity strips the 'multisin_' prefix; for real
+    datasets the regime name (physionet/activity/ushcn) is used directly.
+    """
+    data_root_name = Path(args.data_root).name
+    phase = PHASE_MAP.get(data_root_name, data_root_name)
+    if args.regime.startswith("multisin_"):
+        irregularity = args.regime.replace("multisin_", "")
+    else:
+        irregularity = args.regime  # physionet|activity|ushcn
+    return {"regime": args.regime, "phase": phase, "irregularity": irregularity}

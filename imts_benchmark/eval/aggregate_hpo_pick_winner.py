@@ -32,23 +32,48 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import torch
 
 
-def min_val_mse(metrics_csv: Path) -> float:
-    """Return the minimum val/mse across all logged epochs for one run.
-    Returns float('inf') if the file is missing or has no val/mse column."""
-    if not metrics_csv.exists():
-        return float("inf")
-    try:
-        df = pd.read_csv(metrics_csv)
-    except Exception:
-        return float("inf")
-    if "val/mse" not in df.columns:
-        return float("inf")
-    col = df["val/mse"].dropna()
-    if len(col) == 0:
-        return float("inf")
-    return float(col.min())
+def best_val_mse(cell_dir: Path) -> float:
+    """Return the best (min) val/mse for one HPO cell.
+
+    Reads from the best.ckpt's ModelCheckpoint callback state — that's where
+    Lightning persists `best_model_score`, which equals min val/mse since the
+    callback is configured with monitor='val/mse', mode='min'.
+
+    Falls back to Lightning's CSVLogger metrics.csv if present (older runs).
+    Returns float('inf') on any failure so the caller can treat the cell as
+    unusable.
+    """
+    # Primary: best_model_score from the checkpoint callback state.
+    ckpt_path = cell_dir / "checkpoints" / "best.ckpt"
+    if ckpt_path.exists():
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            cbs = ckpt.get("callbacks", {})
+            for k, v in cbs.items():
+                if "ModelCheckpoint" in k and isinstance(v, dict):
+                    score = v.get("best_model_score")
+                    if score is not None:
+                        return float(score)
+        except Exception as e:
+            print(f"[aggregate] WARNING: could not read {ckpt_path}: {e}",
+                  file=sys.stderr)
+
+    # Fallback: old-style metrics.csv if a CSVLogger was used.
+    metrics_csv = cell_dir / "lightning_logs" / "version_0" / "metrics.csv"
+    if metrics_csv.exists():
+        try:
+            df = pd.read_csv(metrics_csv)
+            if "val/mse" in df.columns:
+                col = df["val/mse"].dropna()
+                if len(col) > 0:
+                    return float(col.min())
+        except Exception:
+            pass
+
+    return float("inf")
 
 
 def lr_to_float(lr_str: str) -> float:
@@ -77,8 +102,7 @@ def main() -> int:
             for bs in args.batch_sizes:
                 tag = f"dt-{dt}_lr-{lr}_bs-{bs}"
                 cell_dir = phase_dir / args.regime / tag / f"seed{args.seed}"
-                metrics_csv = cell_dir / "lightning_logs" / "version_0" / "metrics.csv"
-                val_mse = min_val_mse(metrics_csv)
+                val_mse = best_val_mse(cell_dir)
                 if val_mse == float("inf"):
                     missing.append(str(cell_dir))
                 rows.append({

@@ -1,0 +1,100 @@
+#!/bin/bash
+#SBATCH --account=p33049
+#SBATCH --job-name=mv_hpo_replcnf
+#SBATCH --nodes=1
+#SBATCH --output=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/hpo_mamba_mv/replace_confirm/slurm_%A_%a.out
+#SBATCH --error=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/hpo_mamba_mv/replace_confirm/slurm_%A_%a.err
+#SBATCH --time=4:00:00
+#SBATCH --partition=gengpu
+#SBATCH --gres=gpu:h100:1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --array=1-15
+#SBATCH --mail-user=dhjrzzang@gmail.com
+#SBATCH --mail-type=END,FAIL
+
+# 5-seed confirm of the per-dataset HPO winners for dt_mode=replace.
+# Reads <WINNERS_JSON>['<dataset>'] = {lr, train_batch_size}.
+#
+# Mapping: T = TASK_ID-1; ds_idx = T // 5; seed = (T % 5) + 1.
+#   tasks  1..5  -> physionet seeds 1..5
+#   tasks  6..10 -> activity  seeds 1..5
+#   tasks 11..15 -> ushcn     seeds 1..5
+
+module purge
+module load gcc/11.2.0
+export PYTHONNOUSERSITE=1
+export CUDA_VISIBLE_DEVICES=0
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "ERROR: WANDB_API_KEY is not set." >&2
+    exit 1
+fi
+export WANDB_MODE=online
+unset WANDB_SILENT 2>/dev/null || true
+
+MAMBA_ENV=/projects/b1094/StarEmbed/pythonenvs/mamba
+CODE_DIR=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_dk
+DATA_ROOT=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/tpatchgnn_data
+LOG_BASE=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/hpo_mamba_mv/replace_confirm
+WINNERS_JSON=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/hpo_mamba_mv/replace/winners_by_dataset.json
+
+if [[ ! -f "${WINNERS_JSON}" ]]; then
+    echo "ERROR: ${WINNERS_JSON} not found (run aggregate_hpo_real.py first)." >&2
+    exit 1
+fi
+
+DATASETS=("physionet" "activity" "ushcn")
+DT_MODE=replace
+
+T=$(( SLURM_ARRAY_TASK_ID - 1 ))
+DS_IDX=$(( T / 5 ))
+SEED=$(( (T % 5) + 1 ))
+DS=${DATASETS[$DS_IDX]}
+
+LR=$(${MAMBA_ENV}/bin/python -c "import json; print(json.load(open('${WINNERS_JSON}'))['${DS}']['lr'])")
+BS=$(${MAMBA_ENV}/bin/python -c "import json; print(json.load(open('${WINNERS_JSON}'))['${DS}']['train_batch_size'])")
+
+case $DS in
+    physionet) GRID_K=256 ;;
+    activity)  GRID_K=128 ;;
+    ushcn)     GRID_K=128 ;;
+esac
+
+TAG=dt-${DT_MODE}_lr-${LR}_bs-${BS}
+OUTPUT_DIR=${LOG_BASE}/${DS}/${TAG}/seed${SEED}
+mkdir -p $OUTPUT_DIR
+export WANDB_DIR=${OUTPUT_DIR}
+
+echo "=========================================="
+echo "WINNER-CONFIRM  ds=$DS  dt_mode=$DT_MODE  lr=$LR  bs=$BS  seed=$SEED  grid_K=$GRID_K"
+echo "Job: $SLURM_JOB_ID  Array: $SLURM_ARRAY_TASK_ID"
+echo "Winners JSON: ${WINNERS_JSON}"
+echo "Time: $(date)"
+echo ""
+
+cd $CODE_DIR
+START_TIME=$(date +%s)
+
+srun ${MAMBA_ENV}/bin/python -m imts_benchmark.mamba_mv.train_mv \
+    --data_root $DATA_ROOT \
+    --regime $DS \
+    --auto_meta \
+    --dt_mode $DT_MODE \
+    --grid_K $GRID_K \
+    --lr $LR \
+    --train_batch_size $BS \
+    --seed $SEED \
+    --output_dir $OUTPUT_DIR \
+    --use_wandb \
+    --wandb_project TSKing \
+    --wandb_run_name "real_hpo_replace_confirm_${DS}_${TAG}_seed${SEED}"
+
+EXIT_CODE=$?
+END_TIME=$(date +%s)
+ELAPSED=$((END_TIME - START_TIME))
+echo ""
+echo "Exit code: $EXIT_CODE"
+echo "Wall time: ${ELAPSED}s"
+echo "Done at $(date)"

@@ -1,9 +1,14 @@
 """Phase-general plotting for Phase 3 / 4-1 / 4-2 (current active lineup:
-Mamba-MV {learned, replace}, S5 paper-native, RoMAE paper-native).
+Mamba-MV {learned, replace, concat}, S5 paper-native, RoMAE paper-native).
+
+Post-HPO (2026-04-24): the Mamba-MV dt_mode ablation prefers `hpo_tuned_{mode}`
+rows when present (fair per-mode HPs), falling back to pre-HPO `{mode}` rows.
+Headline "best dt_mode" plots also benefit — pick_best_variant picks min MSE
+across all available variants including HPO-tuned.
 
 Phase 2 had a different lineup (4 models incl. mTAN, 3 dt_modes incl. additive);
 it is handled by the dedicated `plot_phase2_*.py` scripts. This script produces
-the same-family outputs for the current 3-model × 2-dt-mode regime and, for
+the same-family outputs for the current 3-model × 3-dt-mode regime and, for
 Phase 4, an extra bar on the gapped-variate's `out_gap` target-weighted MSE.
 
 Outputs (into --out_dir):
@@ -43,8 +48,20 @@ REGIME_TABLE_LABELS = {
 MODELS = ("mamba_mv", "s5", "romae")
 MODEL_LABELS = {"mamba_mv": "Mamba-MV (best dt_mode)", "s5": "S5", "romae": "RoMAE"}
 COLORS = {"mamba_mv": "#d62728", "s5": "#ff7f0e", "romae": "#1f77b4"}
-DT_MODES = ("learned", "replace")
-DT_COLORS = {"learned": "#7f7f7f", "replace": "#d62728"}
+DT_MODES = ("learned", "replace", "concat")
+DT_COLORS = {"learned": "#7f7f7f", "replace": "#d62728", "concat": "#2ca02c"}
+
+
+def _mamba_row(sub: pd.DataFrame, regime: str, mode: str) -> pd.Series | None:
+    """Return the best-available Mamba row for (regime, dt_mode).
+    Prefer `hpo_tuned_{mode}` if present (fair per-mode tuned HPs), else `{mode}`.
+    Returns None if neither is in the frame (e.g. `concat` on pre-HPO regimes).
+    """
+    for vname in (f"hpo_tuned_{mode}", mode):
+        r = sub[(sub["regime"] == regime) & (sub["variant"] == vname)]
+        if not r.empty:
+            return r.iloc[0]
+    return None
 
 
 def _phase_title(phase: str) -> str:
@@ -154,23 +171,25 @@ def plot_training_time(df: pd.DataFrame, phase: str, out_dir: Path) -> None:
 def plot_dt_mode_ablation(df: pd.DataFrame, phase: str, out_dir: Path) -> None:
     sub = df[df["model"] == "mamba_mv"].copy()
     x = np.arange(len(REGIMES))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(9, 4.5))
+    width = 0.27
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    n = len(DT_MODES)
     for i, v in enumerate(DT_MODES):
         means, stds = [], []
         for regime in REGIMES:
-            r = sub[(sub["regime"] == regime) & (sub["variant"] == v)]
-            if r.empty:
+            row = _mamba_row(sub, regime, v)
+            if row is None:
                 means.append(np.nan); stds.append(np.nan); continue
-            means.append(float(r["mse_mean"].iloc[0]))
-            stds.append(float(r["mse_std"].iloc[0]))
-        ax.bar(x + (i - 0.5) * width, means, width, yerr=stds, capsize=3,
+            means.append(float(row["mse_mean"])); stds.append(float(row["mse_std"]))
+        offset = (i - (n - 1) / 2) * width
+        ax.bar(x + offset, means, width, yerr=stds, capsize=3,
                label=f"dt_mode={v}", color=DT_COLORS[v],
                edgecolor="black", linewidth=0.3)
     ax.set_xticks(x)
     ax.set_xticklabels([REGIME_LABELS[r] for r in REGIMES])
-    ax.set_ylabel("Test MSE")
-    ax.set_title(f"{_phase_title(phase)} — Mamba-MV dt_mode ablation (n=5 seeds)")
+    ax.set_ylabel("Test MSE (lower = better)")
+    ax.set_title(f"{_phase_title(phase)} — Mamba-MV dt_mode ablation "
+                 f"(HPO-tuned where available, n=5 seeds)")
     ax.legend(loc="best", fontsize=9)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
@@ -233,30 +252,41 @@ def _fmt(mean, std, digits=4):
 def plot_dt_mode_table(df: pd.DataFrame, phase: str, out: Path) -> None:
     sub = df[df["model"] == "mamba_mv"].copy()
     variants = [("learned", "Learned Δ\n(vanilla Mamba)"),
-                ("replace", "Replace: Δ = Δtrue\n(our main)")]
+                ("replace", "Replace: Δ = Δtrue\n(ZOH at physical Δt)"),
+                ("concat",  "Concat: Δtrue → dt_proj\n(ours, selection-preserving)")]
     col_headers = []
     for rg in REGIMES:
         col_headers.append(REGIME_TABLE_LABELS[rg] + "\nMSE ↓")
         col_headers.append("R² ↑")
-    best_mse = {rg: sub[sub["regime"] == rg]["mse_mean"].min() for rg in REGIMES}
-    best_r2  = {rg: sub[sub["regime"] == rg]["r2_mean"].max()  for rg in REGIMES}
+    # Best across all three variants for highlighting.
+    per_regime_mode_mse = {rg: [] for rg in REGIMES}
+    per_regime_mode_r2  = {rg: [] for rg in REGIMES}
+    for v, _ in variants:
+        for rg in REGIMES:
+            row = _mamba_row(sub, rg, v)
+            if row is None:
+                continue
+            per_regime_mode_mse[rg].append(float(row["mse_mean"]))
+            per_regime_mode_r2[rg].append(float(row["r2_mean"]))
+    best_mse = {rg: (min(v) if v else np.nan) for rg, v in per_regime_mode_mse.items()}
+    best_r2  = {rg: (max(v) if v else np.nan) for rg, v in per_regime_mode_r2.items()}
     cell_text, cell_colors = [], []
     for v, _ in variants:
         row, cols = [], []
         for rg in REGIMES:
-            r = sub[(sub["regime"] == rg) & (sub["variant"] == v)]
-            if r.empty:
+            r = _mamba_row(sub, rg, v)
+            if r is None:
                 row.append("—"); row.append("—")
                 cols.extend(["white", "white"]); continue
-            mse_m = float(r["mse_mean"].iloc[0]); mse_s = float(r["mse_std"].iloc[0])
-            r2_m  = float(r["r2_mean"].iloc[0]);  r2_s  = float(r["r2_std"].iloc[0])
+            mse_m = float(r["mse_mean"]); mse_s = float(r["mse_std"])
+            r2_m  = float(r["r2_mean"]);  r2_s  = float(r["r2_std"])
             row.append(_fmt(mse_m, mse_s))
             row.append(_fmt(r2_m,  r2_s,  digits=3))
             cols.append("#c8e6c9" if abs(mse_m - best_mse[rg]) < 1e-9 else "white")
             cols.append("#c8e6c9" if abs(r2_m  - best_r2[rg])  < 1e-9 else "white")
         cell_text.append(row); cell_colors.append(cols)
     row_labels = [label for _, label in variants]
-    fig, ax = plt.subplots(figsize=(16, 2.8))
+    fig, ax = plt.subplots(figsize=(16, 3.6))
     ax.axis("off")
     t = ax.table(cellText=cell_text, rowLabels=row_labels, colLabels=col_headers,
                  cellColours=cell_colors, cellLoc="center", rowLoc="center", loc="center")
@@ -265,7 +295,8 @@ def plot_dt_mode_table(df: pd.DataFrame, phase: str, out: Path) -> None:
         t[(ri + 1, -1)].get_text().set_fontweight("bold")
     for ci in range(len(col_headers)):
         c = t[(0, ci)]; c.get_text().set_fontweight("bold"); c.set_facecolor("#e3f2fd")
-    plt.suptitle(f"{_phase_title(phase)} — Mamba-MV dt_mode ablation  (mean ± std, 5 seeds, green = best)",
+    plt.suptitle(f"{_phase_title(phase)} — Mamba-MV dt_mode ablation "
+                 f"(HPO-tuned where available; mean ± std, 5 seeds, green = best)",
                  y=0.98, fontsize=12, fontweight="bold")
     plt.tight_layout()
     fig.savefig(out, dpi=160, bbox_inches="tight")
