@@ -1,0 +1,35 @@
+% Phase-5 IMTS forecasting results table — NeurIPS style.
+% Single-column, booktabs (no vertical rules), compact subscript std.
+% Numbers cited directly from Zhang et al., ICML 2024, Table 1, page 7.
+% Our rows: 5 seeds, patience=10 (matching T-PatchGNN protocol).
+% \textbf{} = best per column; \underline{} = second-best per column.
+% Required: \usepackage{booktabs}
+
+\begin{table}[t]
+\caption{Forecasting performance on real IMTS datasets (mean$_{\pm\text{std}}$ over 5 seeds, patience=10, val/MSE early-stopping). Top block: published baselines from Zhang et al.\ (ICML 2024) Table 1, all reproduced at hidden\_dim=32 for Activity/USHCN per their Sec.~5.1.2 ($\sim$150--300K parameters; T-PatchGNN itself is 165K on Activity, 168K on USHCN). Bottom block: our runs at TSFM-scale parameter budgets (S5 1.4M, RoMAE 7.8M, Mamba-MV 7.8M); the $\sim$47$\times$ size disparity vs.\ T-PatchGNN should be considered when interpreting the comparison. \textbf{Bold} = best per column; \underline{underline} = second-best. Em-dashes mark datasets we have not run.}
+\label{tab:imts_real_results}
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.05}
+\footnotesize
+\begin{tabular}{lcccccccc}
+\toprule
+& \multicolumn{2}{c}{PhysioNet} & \multicolumn{2}{c}{MIMIC} & \multicolumn{2}{c}{Human Activity} & \multicolumn{2}{c}{USHCN} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Algorithm & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE \\
+& \scriptsize $\times 10^{-3}$ & \scriptsize $\times 10^{-2}$ & \scriptsize $\times 10^{-2}$ & \scriptsize $\times 10^{-2}$ & \scriptsize $\times 10^{-3}$ & \scriptsize $\times 10^{-2}$ & \scriptsize $\times 10^{-1}$ & \scriptsize $\times 10^{-1}$ \\
+\midrule
+mTAND        & 6.23$_{\pm 0.24}$ & 4.51$_{\pm 0.17}$ & \underline{1.85$_{\pm 0.06}$} & \underline{7.73$_{\pm 0.13}$} & 3.22$_{\pm 0.07}$ & 3.81$_{\pm 0.07}$ & 5.33$_{\pm 0.05}$ & 3.26$_{\pm 0.10}$ \\
+Latent-ODE   & \underline{6.05$_{\pm 0.57}$} & \underline{4.23$_{\pm 0.26}$} & 1.89$_{\pm 0.19}$ & 8.11$_{\pm 0.52}$ & 3.34$_{\pm 0.11}$ & 3.94$_{\pm 0.12}$ & 5.62$_{\pm 0.03}$ & 3.60$_{\pm 0.12}$ \\
+CRU          & 8.56$_{\pm 0.26}$ & 5.16$_{\pm 0.09}$ & 1.97$_{\pm 0.02}$ & 7.93$_{\pm 0.19}$ & 6.97$_{\pm 0.78}$ & 6.30$_{\pm 0.47}$ & 6.09$_{\pm 0.17}$ & 3.54$_{\pm 0.18}$ \\
+Neural Flow  & 7.20$_{\pm 0.07}$ & 4.67$_{\pm 0.04}$ & 1.87$_{\pm 0.05}$ & 8.03$_{\pm 0.19}$ & 4.05$_{\pm 0.13}$ & 4.46$_{\pm 0.09}$ & 5.35$_{\pm 0.05}$ & 3.25$_{\pm 0.05}$ \\
+T-PatchGNN   & \textbf{4.98$_{\pm 0.08}$} & \textbf{3.72$_{\pm 0.03}$} & \textbf{1.69$_{\pm 0.03}$} & \textbf{7.22$_{\pm 0.09}$} & \underline{2.66$_{\pm 0.03}$} & \textbf{3.15$_{\pm 0.02}$} & \underline{5.00$_{\pm 0.04}$} & \textbf{3.08$_{\pm 0.04}$} \\
+\midrule
+S5                & --- & --- & --- & --- & 16.30$_{\pm 0.04}$ & 10.23$_{\pm 0.01}$ & 5.25$_{\pm 0.04}$ & 3.20$_{\pm 0.07}$ \\
+RoMAE             & --- & --- & --- & --- & \textbf{2.62$_{\pm 0.02}$} & \underline{3.18$_{\pm 0.02}$} & \textbf{4.94$_{\pm 0.04}$} & \underline{3.10$_{\pm 0.06}$} \\
+Mamba-MV (replace)& --- & --- & --- & --- & 2.80$_{\pm 0.01}$ & 3.35$_{\pm 0.02}$ & 5.23$_{\pm 0.11}$ & 3.33$_{\pm 0.28}$ \\
+Mamba-MV (learned)& --- & --- & --- & --- & 2.85$_{\pm 0.04}$ & 3.36$_{\pm 0.02}$ & 5.17$_{\pm 0.03}$ & 3.35$_{\pm 0.14}$ \\
+Mamba-MV (concat) & --- & --- & --- & --- & 2.98$_{\pm 0.03}$ & 3.45$_{\pm 0.03}$ & 5.16$_{\pm 0.04}$ & 3.33$_{\pm 0.08}$ \\
+\bottomrule
+\end{tabular}
+\end{table}

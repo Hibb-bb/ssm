@@ -435,3 +435,39 @@ The HPO is restricted to `multisin_high_irreg` only. Other regimes (regular, low
 - [ ] `output/log/.../hpo_mamba_mv/phase{3,4_2}/winner_config.json` — chosen `(dt_mode, lr, bs)` per phase
 - [ ] `HPO_COMPARISON_phase3_high_irreg.md`, `HPO_COMPARISON_phase4_2_high_irreg.md` — tuned Mamba-MV vs S5/RoMAE comparison tables
 - [ ] New `variant=hpo_tuned_{dt_mode}` rows appended to `phase{3,4_2}_summary_wide.csv`
+
+---
+
+# Addendum 2026-04-25 — Phase 5 (real T-PatchGNN datasets) and S5 audit refresh
+
+Full Phase-5 detail at [`RESULTS_phase5_real.md`](RESULTS_phase5_real.md). This addendum is a pointer; do not duplicate content.
+
+## A7. Phase 5 = real-data extension (Activity, USHCN; PhysioNet deferred)
+
+Goal: produce numbers comparable to T-PatchGNN ICML 2024 Table 1, on the same 60/20/20 splits. PhysioNet deferred for now; MIMIC out of scope (no preprocessing pipeline). Mamba-MV uses HPO winners from the colleague's W&B sweep (verified val/mse-best on real data only, not synthetic). S5 and RoMAE use paper-native defaults. All three at patience=10 in p10 reruns to match T-PatchGNN protocol exactly.
+
+## A8. Effective Mamba-MV size correction (CLI default, not class default)
+
+The class default in `multivariate_forecaster.py:47` is `d_model=256`, but `train_mv.py:63` sets the CLI default to `d_model=384` and **no sbatch passes `--d_model` explicitly**. So all our and the colleague's runs are at d_model=384 → ~7.81M params, NOT 3.55M. Confirmed against W&B configs. Future hygiene fix: drop class-level defaults for tunable hyperparameters and centralize defaults in the CLI parser (or a shared dataclass).
+
+## A9. Parameter ratio vs T-PatchGNN
+
+T-PatchGNN paper standardizes all 17 baselines + T-PatchGNN at hidden_dim=32 on Activity/USHCN. Direct count from their repo:
+
+| Model | Activity | USHCN |
+|---|---|---|
+| T-PatchGNN (paper config) | 165.6K | 167.5K |
+| Our Mamba-MV (d_model=384) | 7.81M (~47×) | 7.79M (~47×) |
+| Our RoMAE | 7.80M (~47×) | 7.80M (~47×) |
+| Our S5 | 1.40M (~8×) | 1.40M (~8×) |
+
+Reviewers will scrutinize the ~47× gap. Two paths: (a) concede & frame Mamba-MV as TSFM-class, or (b) re-run a shrunk Mamba-MV (~500K-1M params) and demonstrate the small version still beats T-PatchGNN. Decision pending p10 results.
+
+## A10. S5 audit refresh (2026-04-25)
+
+`audit/baseline_spec_s5.md` rewritten to:
+- Reflect current paper-native config (1.40M params; old 7.79M `d_model=384` config retired in Phase 2).
+- Add S5-vs-S4 verification: kernel is unmistakably S5 (diagonal Λ + parallel scan + per-step `step_scale·exp(log_step)`), not S4 (which would be DPLR + Cauchy/FFT + single learnable step).
+- Add channel-independence justification: per-variate stacking is a *forced* design choice for IMTS where variates do not share observation timestamps. True MIMO across variates would require pre-alignment to a common grid, which is precisely what Mamba-MV's shared-grid + VarAttention provides. The S5 baseline therefore measures "what a per-variate SSM cannot do," and Mamba-MV's contribution is the cross-variate fusion that S5 lacks. This is the honest framing for the paper.
+- Add a paper-ready citation block (Section 6 of the spec).
+- Add explicit honest-limitations section (Section 7).

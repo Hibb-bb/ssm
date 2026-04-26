@@ -11,8 +11,8 @@
 
 Under `../audit/`, tracking the wrapper code that's still in use:
 
-- `../audit/baseline_spec_romae.md` — **GREEN** (paper-native RoPE-2D MAE)
-- `../audit/baseline_spec_s5.md` — **GREEN** (paper-native d_model=128, state_dim=256)
+- `../audit/baseline_spec_romae.md` — **GREEN** (paper-native RoPE-2D MAE; ~7.8M params)
+- `../audit/baseline_spec_s5.md` — **GREEN** (paper-native d_model=128, state_dim=256; ~1.4M params). **Updated 2026-04-25** with: kernel-vs-S4 verification, channel-independence justification, IMTS adaptation rationale, and a paper-ready citation block.
 
 Specs for dropped baselines moved to `../audit/archive/` (mTAN, ContiFormer).
 
@@ -22,6 +22,7 @@ Specs for dropped baselines moved to `../audit/archive/` (mTAN, ContiFormer).
 - `RESULTS_phase3.md` — **done** (async dense; 80 runs; HPO gate triggered)
 - `RESULTS_phase4_1.md` — **done** (gap on v3 fixed; 80 runs; HPO gate triggered 2/3)
 - `RESULTS_phase4_2.md` — **done** (gap on random variate; 80 runs; Mamba-MV `learned` wins high_irreg)
+- **[`RESULTS_phase5_real.md`](RESULTS_phase5_real.md)** — **active** (real T-PatchGNN datasets: Activity, USHCN; p10 reruns submitted 2026-04-25 as jobs 6384307/6384308/6384309). Includes T-PatchGNN Table 1 comparison context, parameter ratios (~47×), and decision branches (shrink Mamba-MV vs other dt_modes vs ship as-is).
 
 ## Rendered assets
 

@@ -34,6 +34,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy import stats as sp_stats
 
+from imts_benchmark.shared_config.global_metrics import (
+    aggregate_global_metrics,
+    per_sample_variable_sums,
+)
+
 from .irregular_ssm import PerVariateIrregularSSM
 from .query_readout import QueryReadout
 from .shared_grid import SharedGridAligner
@@ -234,10 +239,12 @@ class MultivariateMambaForecaster(pl.LightningModule):
                 y_p = preds[i, d][m_d].detach().cpu().numpy()
                 per_var_mse[f"mse_v{d}"] = float(np.mean((y_t - y_p) ** 2))
                 per_var_mse[f"mae_v{d}"] = float(np.mean(np.abs(y_t - y_p)))
-                per_var_mse[f"ss_res_v{d}"] = float(np.sum((y_t - y_p) ** 2))
-                per_var_mse[f"abs_err_sum_v{d}"] = float(np.sum(np.abs(y_t - y_p)))
-                per_var_mse[f"count_v{d}"] = int(len(y_t))
                 per_var_mse[f"n_obs_v{d}"] = int(obs_counts[d])
+                # Streaming sums for global per-variable R²/Pearson
+                # (aggregated in on_test_epoch_end via aggregate_global_metrics).
+                # This also writes count_v{d}, ss_res_v{d}, abs_err_sum_v{d}.
+                for k, v in per_sample_variable_sums(y_t, y_p).items():
+                    per_var_mse[f"{k}_v{d}"] = v
 
             # Phase 4 gap-region metrics for the gapped variate d ∈ {0,1,2}.
             # Phase 4-1 (fixed_v3): d always = 2. Phase 4-2 (random_uniform):
@@ -274,22 +281,24 @@ class MultivariateMambaForecaster(pl.LightningModule):
     def on_test_epoch_end(self):
         if not self._test_outputs:
             return
-        # Global target-weighted aggregation for MSE and MAE so test reporting
-        # uses the same SSE/N denominator as the training loss (F.mse_loss on
-        # pred_mask positions). R^2 and Pearson stay sample-averaged (they are
-        # per-sample correlation-style scores).
-        total_ss_res = sum(o["ss_res"] for o in self._test_outputs)
-        total_abs_err = sum(o["abs_err_sum"] for o in self._test_outputs)
-        total_count = max(sum(o["count"] for o in self._test_outputs), 1)
-        metrics = {
-            "mse": total_ss_res / total_count,
-            "mae": total_abs_err / total_count,
-            "r2": float(np.mean([o["r2"] for o in self._test_outputs])),
-            "pearson": float(np.mean([o["pearson"] for o in self._test_outputs])),
-        }
-        for k, v in metrics.items():
-            self.log(f"test/{k}", v, prog_bar=True)
-        self._test_agg = metrics
+        # Per-variable global R²/Pearson (pooled across the entire test set,
+        # then averaged over variables that have n>=2 and ss_tot_y>eps).
+        # This replaces the previous per-sample R² mean which collapsed
+        # to -1e10 on USHCN (flat per-sample windows → ss_tot ≈ 0).
+        # MSE/MAE remain target-weighted (SSE / total observed targets),
+        # which is identical numerically to the legacy per-sample sum/count.
+        n_vars = int(self.hparams.n_vars)
+        metrics = aggregate_global_metrics(self._test_outputs, n_vars)
+        # Log scalars: ours (target-weighted) + tpg (variable-averaged) + r2/pearson.
+        for k in ("mse", "mae", "mse_tpg", "mae_tpg", "r2", "pearson"):
+            self.log(f"test/{k}", metrics[k], prog_bar=True)
+        # _test_agg is consumed by train_mv.py via float(v) — keep scalars only.
+        # Per-variable arrays kept on _test_per_var for downstream analysis.
+        self._test_agg = {k: metrics[k] for k in
+                          ("mse", "mae", "mse_tpg", "mae_tpg", "r2", "pearson")}
+        self._test_per_var = {k: metrics[k] for k in
+                              ("r2_per_var", "pearson_per_var",
+                               "mse_per_var", "mae_per_var", "n_per_var")}
 
     def configure_optimizers(self):
         no_decay = set()

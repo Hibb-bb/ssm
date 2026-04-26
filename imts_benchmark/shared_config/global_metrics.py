@@ -142,12 +142,36 @@ def aggregate_global_metrics(
         return float(sum(vals) / len(vals)) if vals else float("nan")
 
     total_count = max(sum(out_n), 1)
+
+    # Variable-averaged MSE/MAE — T-PatchGNN's compute_error(reduce='mean')
+    # convention. Computes per-variable mean SE/AE pooled across the entire
+    # test set, then averages over variables that have at least one obs.
+    # This is what their published Table 1 numbers use; we report it
+    # alongside our target-weighted aggregation for direct comparability.
+    n_avai_var = sum(1 for n_d in out_n if n_d > 0)
+    if n_avai_var > 0:
+        mse_per_var = [out_ssr[d] / out_n[d] if out_n[d] > 0 else 0.0
+                       for d in range(n_vars)]
+        mae_per_var = [out_aes[d] / out_n[d] if out_n[d] > 0 else 0.0
+                       for d in range(n_vars)]
+        mse_tpg = sum(mse_per_var) / n_avai_var
+        mae_tpg = sum(mae_per_var) / n_avai_var
+    else:
+        mse_per_var = [float("nan")] * n_vars
+        mae_per_var = [float("nan")] * n_vars
+        mse_tpg = float("nan")
+        mae_tpg = float("nan")
+
     return {
-        "mse":     sum(out_ssr) / total_count,
-        "mae":     sum(out_aes) / total_count,
+        "mse":     sum(out_ssr) / total_count,        # target-weighted (ours)
+        "mae":     sum(out_aes) / total_count,        # target-weighted (ours)
+        "mse_tpg": mse_tpg,                           # variable-averaged (T-PatchGNN)
+        "mae_tpg": mae_tpg,                           # variable-averaged (T-PatchGNN)
         "r2":      _mean_skip_nan(r2_per_var),
         "pearson": _mean_skip_nan(pe_per_var),
         "r2_per_var":      r2_per_var,
         "pearson_per_var": pe_per_var,
+        "mse_per_var":     mse_per_var,
+        "mae_per_var":     mae_per_var,
         "n_per_var":       out_n,
     }

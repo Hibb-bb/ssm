@@ -37,6 +37,11 @@ from torch.optim.lr_scheduler import LambdaLR
 # s5-pytorch upstream.
 from s5 import S5
 
+from imts_benchmark.shared_config.global_metrics import (
+    aggregate_global_metrics,
+    per_sample_variable_sums,
+)
+
 
 class S5TemporalBlock(nn.Module):
     """Pre-LN block: S5(Δt) + residual, then FFN + residual.
@@ -213,10 +218,12 @@ class S5Forecaster(pl.LightningModule):
                 y_p = preds[i, d][m_d].detach().cpu().numpy()
                 per_var_mse[f"mse_v{d}"] = float(np.mean((y_t - y_p) ** 2))
                 per_var_mse[f"mae_v{d}"] = float(np.mean(np.abs(y_t - y_p)))
-                per_var_mse[f"ss_res_v{d}"] = float(np.sum((y_t - y_p) ** 2))
-                per_var_mse[f"abs_err_sum_v{d}"] = float(np.sum(np.abs(y_t - y_p)))
-                per_var_mse[f"count_v{d}"] = int(len(y_t))
                 per_var_mse[f"n_obs_v{d}"] = int(obs_counts[d])
+                # Streaming sums for global per-variable R²/Pearson
+                # (aggregated in on_test_epoch_end).
+                # Also writes count_v{d}, ss_res_v{d}, abs_err_sum_v{d}.
+                for k, v in per_sample_variable_sums(y_t, y_p).items():
+                    per_var_mse[f"{k}_v{d}"] = v
 
             # Phase 4 gap-region metrics for the gapped variate d ∈ {0,1,2}.
             # Phase 4-1 (fixed_v3): always d=2. Phase 4-2 (random_uniform):
@@ -253,20 +260,18 @@ class S5Forecaster(pl.LightningModule):
     def on_test_epoch_end(self):
         if not self._test_outputs:
             return
-        # Target-weighted MSE/MAE matches training-loss convention; R^2 and
-        # Pearson stay sample-averaged (per-sample correlation scores).
-        total_ss_res = sum(o["ss_res"] for o in self._test_outputs)
-        total_abs_err = sum(o["abs_err_sum"] for o in self._test_outputs)
-        total_count = max(sum(o["count"] for o in self._test_outputs), 1)
-        metrics = {
-            "mse": total_ss_res / total_count,
-            "mae": total_abs_err / total_count,
-            "r2": float(np.mean([o["r2"] for o in self._test_outputs])),
-            "pearson": float(np.mean([o["pearson"] for o in self._test_outputs])),
-        }
-        for k, v in metrics.items():
-            self.log(f"test/{k}", v, prog_bar=True)
-        self._test_agg = metrics
+        # Per-variable global R²/Pearson via aggregate_global_metrics replaces
+        # the previous per-sample R² mean (which collapsed to -1e10 on USHCN).
+        n_vars = int(self.n_vars)
+        metrics = aggregate_global_metrics(self._test_outputs, n_vars)
+        for k in ("mse", "mae", "mse_tpg", "mae_tpg", "r2", "pearson"):
+            self.log(f"test/{k}", metrics[k], prog_bar=True)
+        # _test_agg is consumed by train_s5.py via float(v) — keep scalars only.
+        self._test_agg = {k: metrics[k] for k in
+                          ("mse", "mae", "mse_tpg", "mae_tpg", "r2", "pearson")}
+        self._test_per_var = {k: metrics[k] for k in
+                              ("r2_per_var", "pearson_per_var",
+                               "mse_per_var", "mae_per_var", "n_per_var")}
 
     # -------------------------- optim --------------------------
 

@@ -27,8 +27,15 @@ module load gcc/11.2.0
 export PYTHONNOUSERSITE=1
 export CUDA_VISIBLE_DEVICES=0
 
+# Load WANDB_API_KEY: env first, then ~/.bashrc, finally ~/.netrc as fallback.
+if [[ -z "${WANDB_API_KEY:-}" ]] && [[ -f ~/.bashrc ]]; then
+    source ~/.bashrc 2>/dev/null || true
+fi
+if [[ -z "${WANDB_API_KEY:-}" ]] && [[ -f ~/.netrc ]]; then
+    export WANDB_API_KEY=$(awk '/api.wandb.ai/{f=1} f && /password/{print $2; exit}' ~/.netrc)
+fi
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    echo "ERROR: WANDB_API_KEY is not set." >&2
+    echo "ERROR: WANDB_API_KEY is not set (env, ~/.bashrc, and ~/.netrc all empty)." >&2
     exit 1
 fi
 export WANDB_MODE=online

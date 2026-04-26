@@ -1,0 +1,114 @@
+% =====================================================================
+% Two paper subsections for the IMTS forecasting experiment:
+%   (a) how we used S5 and RoMAE (baseline-setup paragraph),
+%   (b) interpretation of why each baseline succeeds or fails (analysis).
+% Designed to slot into the experiments section of the main paper.
+%
+% Citation keys assumed:
+%   smith2023simplified   — Smith, Warrington, Linderman (S5, ICLR 2023)
+%   zivanovic2025rotary   — Zivanovic et al. (RoMAE, arXiv:2505.20535)
+%   zhang2024irregular    — Zhang et al. (T-PatchGNN, ICML 2024)
+%   gu2023mamba           — Gu, Dao (Mamba, 2023)
+% Cross-references assumed:
+%   tab:imts_real_results — main results table (results_table_phase5.tex)
+%   sec:method            — our method section
+% =====================================================================
+
+\subsection{Baseline Setups: S5 and RoMAE}
+\label{sec:baselines_setup}
+
+We benchmark our model against two architecturally distinct foundation
+baselines, in addition to the seventeen specialized IMTS baselines reported by
+\citet{zhang2024irregular}.
+
+\paragraph{S5 (Smith et al., ICLR 2023).}
+We use the paper-native pendulum configuration ($d_{\text{model}}{=}128$,
+state dim $P{=}256$, $n_{\text{layers}}{=}6$, AdamW with weight decay $0.05$
+excluded from the SSM-structured parameters $\Lambda$, $\log\Delta$, $B$, $C$,
+$D$), giving 1.40M parameters. Per-step continuous-time $\Delta t$ is threaded
+through S5's \texttt{step\_scale} argument, identical to the paper's pendulum
+recipe (Section~5.4 of \citet{smith2023simplified}). For multivariate IMTS,
+each variate is processed independently by the same parameter-shared S5
+stack---channel-independent at the variate level, MIMO at the
+$d_{\text{model}}$ level. This is a forced design choice: variates in raw IMTS
+do not share observation timestamps, so true MIMO across the variate axis
+(stacking $V$ values per timestep) would require pre-alignment to a common
+grid, which S5 itself does not provide. Per-variate channel-independence is
+the only honest pure-S5 application to raw IMTS.
+
+\paragraph{RoMAE (Zivanovic et al., 2025).}
+We use the configuration $d_{\text{enc}}{=}288$, $\text{depth}_{\text{enc}}{=}7$,
+$d_{\text{dec}}{=}180$, $\text{depth}_{\text{dec}}{=}2$, $p_{\text{RoPE}}{=}0.75$,
+giving 7.80M parameters (interpolated between the paper's tiny and small
+variants to match a TSFM-scale budget). Each observation becomes one flat
+token with continuous position vector $[\text{timestamp},\ \text{variate\_id}]$,
+exactly as recommended in Section~4.2 of \citet{zivanovic2025rotary} for
+multivariate IMTS, with the learnable $[\text{CLS}]$ token included to break
+the relative-position translation invariance (their Proposition~4.2). The
+encoder strips the masked (forecast) positions and processes only history
+tokens; the decoder reconstructs the masked values from learnable mask tokens
+carrying the future positions. This is the same MAE-style masking semantics
+used for image and audio in the paper, applied to forecasting by setting the
+mask region to $\{t : t \geq \text{history}\}$. We train from scratch, omitting
+the 200-epoch unsupervised pretraining used in \citet{zivanovic2025rotary},
+which is the most likely source of any residual performance gap; we discuss
+this in Section~\ref{sec:baselines_interpretation}.
+
+\subsection{Interpretation: Two Failure Axes}
+\label{sec:baselines_interpretation}
+
+The relative ordering of S5, RoMAE, and our model in
+Table~\ref{tab:imts_real_results} is consistent across synthetic and real
+benchmarks once interpreted along two orthogonal axes: (i) the architectural
+capacity for cross-variate fusion and (ii) the data efficiency of training
+without pretraining.
+
+\paragraph{Axis 1 --- cross-variate fusion is necessary, not optional.}
+S5's channel-independent design has zero cross-variate information flow: the
+prediction for variate $v$ at time $t$ is a function of variate $v$'s own
+observations only. The consequence is monotone in the cross-variate
+informativeness of the dataset. On weakly-coupled climate observations
+(USHCN, $V{=}5$) S5 is competitive with the strongest baselines
+($\text{MSE}{=}5.25$ vs.\ T-PatchGNN's $5.00$). On densely-coupled
+accelerometer streams (Activity, $V{=}12$ correlated body-sensor channels),
+S5 collapses to $\text{MSE}{=}16.30$ ($R^2{=}{-}0.20$, worse than the
+per-sample mean predictor). The same monotone trend appears on synthetic
+data: per-variate S5 is competitive on Phase~2/3 (no gaps, all variates
+observed) but loses 3/3 irregular regimes to a cross-variate baseline on
+Phase~4-2, where one variate is gapped per sample and the model must
+infer it from the others. Pure SSMs without an explicit cross-variate
+mechanism therefore have an architectural ceiling on densely-coupled IMTS;
+this ceiling is the design problem that GNN-based
+\citep{zhang2024irregular}, attention-based \citep{zivanovic2025rotary}, and
+our shared-grid fusion (Section~\ref{sec:method}) approaches all attempt to
+address.
+
+\paragraph{Axis 2 --- inductive bias vs.\ data quantity.}
+RoMAE has, in principle, an architectural ceiling \emph{above} S5's: full
+attention with axial RoPE positions natively fuses across both time and
+variate axes (\citet{zivanovic2025rotary} Sec.~4.2). Empirically, however,
+RoMAE's behaviour is bimodal in our benchmark. On synthetic regimes with
+$\sim$1000 training samples per condition, RoMAE exhibits high seed variance
+(std $\approx$ mean across Phase~2/3/4-2)\,---\,a symptom of weak inductive
+bias toward time series combined with small data. The original paper
+mitigates this with $\geq$200 epochs of unsupervised MAE pretraining
+followed by short fine-tuning; we do not pretrain. On real datasets with
+$\geq$1K supervised samples (USHCN $\sim$1.1K, Activity $\sim$16K), the
+encoder converges stably and RoMAE achieves the lowest MSE in our benchmark
+on both datasets we ran ($\text{MSE}{=}2.62$ on Activity and $4.94$ on USHCN,
+both improvements over T-PatchGNN's $2.66$ and $5.00$). The contrast between RoMAE's synthetic
+instability and real-data dominance is therefore not architectural but a
+direct measurement of how much labelled IMTS data is required to train a
+high-capacity transformer from scratch.
+
+\paragraph{Implication for evaluating IMTS architectures.}
+These two axes are independent design pressures, and an evaluation of any
+proposed IMTS model should disentangle them. A model that wins on small
+synthetic data may have over-fit to the inductive bias of that data
+(failing Axis~2 in disguise as success), and a model that wins on large
+real data may simply have more parameters and more data
+(failing Axis~1 by paying for it). Our benchmark deliberately includes
+both scales --- six synthetic regimes at $n{=}1000$ each and two real
+datasets at $n{\in}\{1\text{K},16\text{K}\}$ --- so that the cross-variate
+ceiling (Axis~1) and the inductive-bias requirement (Axis~2) can be
+separately attributed.

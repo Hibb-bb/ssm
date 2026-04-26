@@ -13,6 +13,10 @@ __pycache__/
 /wandb/
 **/wandb/
 
+# Vendored upstream repos (cloned in place for reference; do not commit)
+**/_romae_repo/
+**/_upstream/
+
 # Editor / OS
 .vscode/
 .idea/

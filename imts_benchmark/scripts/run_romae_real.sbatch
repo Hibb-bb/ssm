@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --output=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/romae/slurm_%A_%a.out
 #SBATCH --error=/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts_benchmark_v2_real/romae/slurm_%A_%a.err
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=gengpu
 #SBATCH --gres=gpu:h100:1
 #SBATCH --ntasks-per-node=1
@@ -29,8 +29,15 @@ module load gcc/11.2.0
 export PYTHONNOUSERSITE=1
 export CUDA_VISIBLE_DEVICES=0
 
+# Load WANDB_API_KEY: env first, then ~/.bashrc, finally ~/.netrc as fallback.
+if [[ -z "${WANDB_API_KEY:-}" ]] && [[ -f ~/.bashrc ]]; then
+    source ~/.bashrc 2>/dev/null || true
+fi
+if [[ -z "${WANDB_API_KEY:-}" ]] && [[ -f ~/.netrc ]]; then
+    export WANDB_API_KEY=$(awk '/api.wandb.ai/{f=1} f && /password/{print $2; exit}' ~/.netrc)
+fi
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    echo "ERROR: WANDB_API_KEY is not set. Run: export WANDB_API_KEY=... before sbatch." >&2
+    echo "ERROR: WANDB_API_KEY is not set (env, ~/.bashrc, and ~/.netrc all empty)." >&2
     exit 1
 fi
 _KEY_LEN=${#WANDB_API_KEY}
