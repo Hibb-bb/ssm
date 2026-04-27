@@ -69,14 +69,13 @@ class SharedGridAligner(nn.Module):
         grid = torch.linspace(0.0, t_max, K)
         self.register_buffer("grid", grid, persistent=False)
 
-        self.variate_embed = nn.Embedding(n_vars, d_model // 4)
         self.null_state = nn.Parameter(torch.zeros(n_vars, d_hidden))
         nn.init.normal_(self.null_state, std=0.02)
 
         # per-variate, per-channel decay rate gamma_d in [0, +) via softplus
         self.gamma_raw = nn.Parameter(torch.full((n_vars, d_hidden), -3.0))
 
-        proj_in = d_hidden + (d_model // 4) + 1 + 2 * n_freq
+        proj_in = d_hidden + 1 + 2 * n_freq
         self.proj = nn.Linear(proj_in, d_model)
 
     def forward(
@@ -124,13 +123,11 @@ class SharedGridAligner(nn.Module):
         null = self.null_state.view(1, V, 1, D_h).expand(B, V, K, D_h)
         z = torch.where(avail.unsqueeze(-1), z, null)
 
-        # Variate embedding + availability scalar + staleness sinusoid.
-        var_ids = torch.arange(V, device=device).view(1, V, 1).expand(B, V, K)
-        v_emb = self.variate_embed(var_ids)                        # [B,V,K,d_model/4]
+        # Availability scalar + staleness sinusoid (no variate-ID embedding).
         avail_feat = avail.to(z.dtype).unsqueeze(-1)                # [B,V,K,1]
         rho_feat = sinusoidal_encode(rho, n_freq=self.n_freq)       # [B,V,K,2*n_freq]
 
-        e = torch.cat([z, v_emb, avail_feat, rho_feat], dim=-1)     # [B,V,K,*]
+        e = torch.cat([z, avail_feat, rho_feat], dim=-1)            # [B,V,K,*]
         h0 = self.proj(e)                                           # [B,V,K,D]
 
         # Reshape to [B, K, V, D] for downstream variable-axis attention.

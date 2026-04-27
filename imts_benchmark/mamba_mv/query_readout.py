@@ -6,8 +6,8 @@ For a query q_j = (n_j, a_j):
     xi_j     = H^{(L)}_{kappa(j), n_j}  decayed by exp(-gamma_n * omega_j)
     x_hat_j  = g_{n_j}( [xi_j, phi(omega_j)] )
 
-Here g_{n_j} is a *per-variate* linear head, which lets each variate carry its
-own scale/offset for the decoded value.
+Readout is shared across variates: a single head maps
+[xi_j, phi(omega_j)] -> x_hat_j.
 """
 
 from __future__ import annotations
@@ -31,20 +31,15 @@ class QueryReadout(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        self.n_vars = n_vars
         self.K = K
         self.t_max = t_max
         self.n_freq = n_freq
         grid = torch.linspace(0.0, t_max, K)
         self.register_buffer("grid", grid, persistent=False)
 
-        self.gamma_raw = nn.Parameter(torch.full((n_vars, d_model), -3.0))
-        # Per-variate readout heads: [V, (d_model + 2*n_freq) -> 1]
-        self.head_weight = nn.Parameter(
-            torch.empty(n_vars, d_model + 2 * n_freq, 1)
-        )
-        self.head_bias = nn.Parameter(torch.zeros(n_vars, 1))
-        nn.init.xavier_uniform_(self.head_weight)
+        # Shared query-time decay and shared head.
+        self.gamma_raw = nn.Parameter(torch.full((d_model,), -3.0))
+        self.head = nn.Linear(d_model + 2 * n_freq, 1)
 
     def forward(
         self,
@@ -69,16 +64,14 @@ class QueryReadout(nn.Module):
         batch_idx = torch.arange(B, device=device).view(B, 1).expand(B, Q)
         h_at = H[batch_idx, kappa, query_variate]                  # [B, Q, D]
 
-        gamma = F.softplus(self.gamma_raw)[query_variate]          # [B, Q, D]
+        gamma = F.softplus(self.gamma_raw).view(1, 1, D)           # [1, 1, D]
         decay = torch.exp(-gamma * omega.unsqueeze(-1))            # [B, Q, D]
         xi = h_at * decay
 
         omega_feat = sinusoidal_encode(omega, n_freq=self.n_freq)  # [B, Q, 2*n_freq]
         feat = torch.cat([xi, omega_feat], dim=-1)                 # [B, Q, D+2*n_freq]
 
-        W = self.head_weight[query_variate]                        # [B, Q, D+2f, 1]
-        b = self.head_bias[query_variate].squeeze(-1)              # [B, Q]
-        pred = torch.einsum("bqd,bqdo->bqo", feat, W).squeeze(-1) + b
+        pred = self.head(feat).squeeze(-1)                         # [B, Q]
 
         pred = torch.where(query_valid, pred, torch.zeros_like(pred))
         return pred  # [B, Q]
