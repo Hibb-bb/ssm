@@ -20,6 +20,34 @@ import torch.nn.functional as F
 from .shared_grid import sinusoidal_encode
 
 
+class _BinaryVariateAttentionBias(nn.Module):
+    """Learned per-head bias for (same-variate) vs (different-variate) token pairs.
+
+    This avoids a per-variate embedding table and can generalize to unseen
+    variate IDs, as it depends only on equality of IDs.
+    """
+
+    def __init__(self, *, n_heads: int):
+        super().__init__()
+        # weight[0, h] = bias for different-variate pairs
+        # weight[1, h] = bias for same-variate pairs
+        self.weight = nn.Embedding(num_embeddings=2, embedding_dim=n_heads)
+
+    def forward(self, *, query_var_id: torch.Tensor, kv_var_id: torch.Tensor) -> torch.Tensor:
+        """Return bias shaped [N, H, Q, K] for attention scores.
+
+        Args:
+            query_var_id: [N, Q] integer IDs
+            kv_var_id:    [N, K] integer IDs
+        """
+        # [N, Q, K] bool
+        same = query_var_id[:, :, None].eq(kv_var_id[:, None, :])
+        w = self.weight.weight  # [2, H]
+        # [N, Q, K, H] -> [N, H, Q, K]
+        bias = torch.where(same[..., None], w[1], w[0]).permute(0, 3, 1, 2).contiguous()
+        return bias
+
+
 class VariableAxisAttention(nn.Module):
     def __init__(
         self,
@@ -35,15 +63,17 @@ class VariableAxisAttention(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
         self.norm = nn.LayerNorm(d_model)
-        self.variate_embed = nn.Embedding(n_vars, d_model)
         self.avail_embed = nn.Linear(1, d_model)
         self.rho_embed = nn.Linear(2 * n_freq_rho, d_model)
         self.n_freq_rho = n_freq_rho
 
+        # Multi-query attention (MQA): many query heads, shared key/value.
         self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model // n_heads)
+        self.v_proj = nn.Linear(d_model, d_model // n_heads)
         self.o_proj = nn.Linear(d_model, d_model)
+        self.var_bias = _BinaryVariateAttentionBias(n_heads=n_heads)
+
         self.dropout = dropout
         self.out_norm = nn.LayerNorm(d_model)
 
@@ -52,34 +82,48 @@ class VariableAxisAttention(nn.Module):
         H: torch.Tensor,          # [B, K, V, D]
         avail: torch.Tensor,      # [B, K, V]  bool
         rho: torch.Tensor,        # [B, K, V]  float
+        var_id: torch.Tensor | None = None,  # [B, K, V] or [B, V] or None
     ) -> torch.Tensor:
         B, K, V, D = H.shape
         device = H.device
 
         x = self.norm(H)
-        var_ids = torch.arange(V, device=device).view(1, 1, V).expand(B, K, V)
-        v_emb = self.variate_embed(var_ids)                     # [B,K,V,D]
         a_emb = self.avail_embed(avail.to(x.dtype).unsqueeze(-1))
         r_emb = self.rho_embed(sinusoidal_encode(rho, n_freq=self.n_freq_rho))
-        x_tilde = x + v_emb + a_emb + r_emb                     # additive injections
+        x_tilde = x + a_emb + r_emb  # slot-local injections (zero-shot friendly)
 
         # Reshape to (B*K) sequences of V tokens each for per-slot attention.
         x_tilde = x_tilde.view(B * K, V, D)
-        q = self.q_proj(x_tilde).view(B * K, V, self.n_heads, D // self.n_heads).transpose(1, 2)
-        k = self.k_proj(x_tilde).view(B * K, V, self.n_heads, D // self.n_heads).transpose(1, 2)
-        v = self.v_proj(x_tilde).view(B * K, V, self.n_heads, D // self.n_heads).transpose(1, 2)
+        d_head = D // self.n_heads
+
+        # Q: [N, H, V, d_head]
+        q = self.q_proj(x_tilde).view(B * K, V, self.n_heads, d_head).transpose(1, 2)
+        # K/V are shared across heads (MQA): [N, 1, V, d_head] -> expand to [N, H, V, d_head]
+        k = self.k_proj(x_tilde).view(B * K, V, 1, d_head).transpose(1, 2).expand(-1, self.n_heads, -1, -1)
+        v = self.v_proj(x_tilde).view(B * K, V, 1, d_head).transpose(1, 2).expand(-1, self.n_heads, -1, -1)
+
+        # Optional variate-ID bias. If var_id is not provided, we do not inject
+        # any non-permutation-equivariant signal.
+        bias = None
+        if var_id is not None:
+            if var_id.ndim == 2:  # [B, V] -> [B, K, V]
+                var_id = var_id[:, None, :].expand(B, K, V)
+            var_id_bk = var_id.reshape(B * K, V).to(device=device, dtype=torch.long)
+            bias = self.var_bias(query_var_id=var_id_bk, kv_var_id=var_id_bk)
 
         # Unavailable variates cannot provide evidence as keys/values.
         # We apply an additive bias on attention scores; queries from
         # unavailable slots still see some content and are later ignored by
         # downstream modules via `avail`.
         key_mask = avail.view(B * K, 1, 1, V)  # True = allowed
-        scale = (D // self.n_heads) ** -0.5
-        scores = torch.matmul(q, k.transpose(-2, -1)) * scale              # [B*K, H, V, V]
+        scale = (d_head) ** -0.5
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B*K, H, V, V]
+        if bias is not None:
+            scores = scores + bias
         scores = scores.masked_fill(~key_mask, -1e4)
         attn = torch.softmax(scores, dim=-1)
         attn = F.dropout(attn, p=self.dropout, training=self.training)
-        y = torch.matmul(attn, v)                                          # [B*K, H, V, d_head]
+        y = torch.matmul(attn, v)  # [B*K, H, V, d_head]
 
         y = y.transpose(1, 2).contiguous().view(B * K, V, D)
         y = self.o_proj(y).view(B, K, V, D)
