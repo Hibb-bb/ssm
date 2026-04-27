@@ -1,0 +1,26 @@
+# Source registry: paths to all data sources used during pretraining.
+# Override individual paths via env vars or CLI; the same registry is
+# reused for all stages.
+
+# LOTSA
+lotsa_root: "/home/ubuntu/lotsa_data"
+lotsa_weighted_yaml: "/home/ubuntu/uni2ts/cli/conf/pretrain/data/lotsa_v1_weighted.yaml"
+
+# Optional: include / exclude specific LOTSA sub-datasets. Empty list
+# (or absent key) means "use everything that the weight_map references
+# AND that is present on disk".
+lotsa_include: null   # e.g. [PEMS04, PEMS08, beijing_air_quality]
+lotsa_exclude:
+  # Datasets known to be unsuitable for IMTS pretraining (very long,
+  # very narrow, or unusual schema). Trim aggressively as needed.
+  - buildings_900k
+  - largest_2017
+  - largest_2018
+  - largest_2019
+  - largest_2020
+  - largest_2021
+
+# Synthetic
+synthetic:
+  chronos2_synth: "/home/ubuntu/hongyu/ssm/imts_benchmark/synthetic_data/chronos2-synth.arrow"
+  kernelsynth:    "/home/ubuntu/hongyu/ssm/imts_benchmark/synthetic_data/kernelsynth-irregular.arrow"

@@ -1,0 +1,55 @@
+# Stage A — synthetic warm-start *with a small regular-LOTSA tax*.
+#
+# This is the second arm of the §7.F axis-4 ablation
+# (`axis4_synth_lotsa`).  It mirrors `stage_a.yaml` exactly except for
+# the source mix:
+#
+#   axis4_synth_only  : 100% synthetic                              (stage_a.yaml)
+#   axis4_synth_lotsa : 80% synthetic + 20% regular LOTSA  (this file)
+#
+# Why a *regular*-only LOTSA tax (no degraded LOTSA) at this stage:
+#   - Stage A is meant to teach irregular dynamics from synthetic
+#     data; we don't want degraded-LOTSA noise to wash that out yet.
+#   - Regular LOTSA gives the model a foothold on real-domain
+#     amplitudes / frequencies / seasonality without the irregularity
+#     headache.  Stage B is where degraded LOTSA enters at scale.
+#   - Per the §7.F decision rule: "if the synthetic-only run wins
+#     without absolute-scale info, axis 2 [absolute-scale conditioning]
+#     likely doesn't matter."  Adding regular LOTSA here is the
+#     minimum perturbation that exposes the model to real-world
+#     scale during the warm start.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 256
+  max_variates: 20
+  variate_count_dist:    [0.10, 0.60, 0.25, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.20, 0.50, 0.30]
+  regime_dist:     [0.05, 0.10, 0.45, 0.40]
+  min_ctx_obs_per_target: 3
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+# 80% synthetic / 20% regular LOTSA tax
+mix:
+  chronos2_synth: 0.55
+  kernelsynth:    0.25
+  lotsa_regular:  0.20
+
+# Per-source overrides identical to stage_a.yaml + a regime override
+# for lotsa_regular forcing it to 100% regular (no degraded gaps).
+overrides:
+  chronos2_synth:
+    regime_dist: [0.05, 0.10, 0.45, 0.40]
+    task_type_probs: [0.10, 0.65, 0.25]
+  kernelsynth:
+    regime_dist: [0.05, 0.10, 0.40, 0.45]
+    task_type_probs: [0.20, 0.55, 0.25]
+  lotsa_regular:
+    regime_dist: [1.0, 0.0, 0.0, 0.0]
+    task_type_probs: [0.20, 0.55, 0.25]
+    clean_target_mode: false

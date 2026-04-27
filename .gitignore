@@ -5,9 +5,17 @@ __pycache__/
 # Generated datasets
 /data_correct_async/
 /data_correct/
+# Synthetic-data Arrow caches (chronos2-synth.arrow, kernelsynth-irregular.arrow)
+# are reproducible from the .py generators; never commit them.
+*.arrow
+# Converted IMM-TSF sparse data (~40 MB) — reproducible via
+# imts_benchmark/pretrain/scripts/convert_imm_tsf_to_sparse.py.
+imts_benchmark/data/imm_tsf_sparse/
 
 # Sweep / training outputs
 /output/
+# Pretraining runs (ckpts, csv logs, wandb subdirs, profiler dumps).
+imts_benchmark/pretrain/runs/
 
 # Weights & Biases (offline runs)
 /wandb/

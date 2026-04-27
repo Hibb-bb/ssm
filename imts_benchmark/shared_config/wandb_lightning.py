@@ -30,6 +30,20 @@ def build_wandb_logger(
 
     Passing ``False`` to ``pl.Trainer(logger=...)`` disables the default
     TensorBoard logger. Install wandb in the environment when using this.
+
+    Optional namespace attributes (all read via ``getattr`` with default
+    ``None``, so existing trainers don't have to add them):
+
+      ``wandb_project`` / ``wandb_entity`` / ``wandb_run_name`` -- pass
+        through to the W&B logger.
+      ``wandb_mode`` -- ``"online" | "offline" | "disabled"``.  When the
+        environment lacks ``WANDB_API_KEY``, callers can pass
+        ``"offline"`` and W&B will log to a local ``./wandb`` dir
+        (useful for clusters without internet egress).
+      ``wandb_tags`` -- iterable of strings applied as run tags.
+      ``output_dir`` -- when set, used as the W&B ``save_dir`` so the
+        run's local cache lives next to the rest of the run's artifacts
+        (matches the CSVLogger location used by every trainer).
     """
     if not getattr(args, "use_wandb", False):
         return False
@@ -52,6 +66,13 @@ def build_wandb_logger(
         kwargs["entity"] = args.wandb_entity
     if getattr(args, "wandb_run_name", None):
         kwargs["name"] = args.wandb_run_name
+    if getattr(args, "wandb_mode", None):
+        kwargs["mode"] = args.wandb_mode
+    tags = getattr(args, "wandb_tags", None)
+    if tags:
+        kwargs["tags"] = list(tags)
+    if getattr(args, "output_dir", None):
+        kwargs["save_dir"] = str(args.output_dir)
 
     try:
         return WandbLogger(**kwargs)

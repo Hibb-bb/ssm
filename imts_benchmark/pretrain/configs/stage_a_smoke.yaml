@@ -1,0 +1,26 @@
+# Stage A smoke — same regime as stage_a, but mixes only chronos2_synth
+# so the smoke run is isolated from the in-flight kernelsynth build and
+# from LOTSA. Used only by the end-to-end pipeline validation step.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 256
+  max_variates: 20
+  variate_count_dist:    [0.10, 0.60, 0.25, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.20, 0.50, 0.30]
+  regime_dist:     [0.05, 0.10, 0.45, 0.40]
+  min_ctx_obs_per_target: 3
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+mix:
+  chronos2_synth: 1.0
+
+overrides:
+  chronos2_synth:
+    regime_dist: [0.05, 0.10, 0.45, 0.40]
+    task_type_probs: [0.10, 0.65, 0.25]

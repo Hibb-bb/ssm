@@ -169,6 +169,13 @@ class MambaBlock(nn.Module):
 
         dt, B, C = self._compute_delta(x, seqlen)
 
+        # Mamba's CUDA kernel requires delta.dtype == u.dtype. Under
+        # bf16-mixed autocast the dt_proj.bias addition silently promotes
+        # ``dt`` back to fp32 even though x is bf16, which the kernel
+        # rejects with "Expected delta.scalar_type() == input_type".
+        if dt.dtype != x.dtype:
+            dt = dt.to(x.dtype)
+
         y = selective_scan(x, dt, A, B, C, self.D.float(), z=z)
         y = rearrange(y, 'b d l -> b l d')
         out = self.out_proj(y)
@@ -250,6 +257,13 @@ class MambaIrregularBlock(MambaBlock):
             dt = F.softplus(dt_learned)
         else:
             raise RuntimeError(f'unexpected dt_mode={self.dt_mode!r}')
+
+        # Mamba's CUDA kernel requires delta.dtype == u.dtype (and z.dtype).
+        # Under bf16-mixed autocast, x is bf16 while delta_t arrives as fp32,
+        # so the `.float()` casts above leave dt in fp32 and the kernel
+        # rejects it. Cast back to x's dtype here.
+        if dt.dtype != x.dtype:
+            dt = dt.to(x.dtype)
 
         y = selective_scan(x, dt, A, B, C, self.D.float(), z=z)
         y = rearrange(y, 'b d l -> b l d')

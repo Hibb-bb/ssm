@@ -1,0 +1,13 @@
+# Smoke-only registry: chronos2-synth is real (N=100k); kernel and LOTSA
+# are intentionally pointed to non-existent paths so the smoke run is
+# fully isolated from the in-flight kernelsynth build and from LOTSA.
+
+lotsa_root: "/__missing_lotsa__"
+lotsa_weighted_yaml: "/__missing_lotsa_weighted__.yaml"
+
+lotsa_include: []
+lotsa_exclude: []
+
+synthetic:
+  chronos2_synth: "/home/ubuntu/hongyu/ssm/imts_benchmark/synthetic_data/chronos2-synth.arrow"
+  kernelsynth:    "/__missing_kernelsynth__.arrow"

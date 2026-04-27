@@ -62,8 +62,22 @@ class MultivariateMambaForecaster(pl.LightningModule):
         num_warmup_steps: int = 100,
         num_training_steps: int = 1600,
         history: float = 7.0,
+        # ---- Pretraining / FM extensions ----
+        # If ``max_dim`` is set, it overrides ``n_vars`` for the size of
+        # the variate-embedding tables. The pretraining datamodule pads
+        # batches to this dimension and randomizes slot assignment so
+        # the model treats variate IDs as anonymous slot IDs.
+        max_dim: "int | None" = None,
+        # Stable point loss (Time-MoE §3.2.2). Default stays "mse" for
+        # IMTS-benchmark backward compatibility; pretraining passes
+        # "huber" via the train script.
+        loss_type: str = "mse",
+        huber_delta: float = 1.0,
     ):
         super().__init__()
+        # Resolve effective variate-table size before save_hyperparameters
+        if max_dim is not None and int(max_dim) > 0:
+            n_vars = int(max_dim)
         self.save_hyperparameters()
 
         self.history = history
@@ -170,9 +184,18 @@ class MultivariateMambaForecaster(pl.LightningModule):
         if pred_mask.sum() == 0:
             return torch.tensor(0.0, device=values.device, requires_grad=True)
 
-        loss = F.mse_loss(preds[pred_mask], values[pred_mask])
+        if self.hparams.loss_type == "huber":
+            loss = F.smooth_l1_loss(
+                preds[pred_mask],
+                values[pred_mask],
+                beta=self.hparams.huber_delta,
+            )
+            log_key = f"{prefix}/huber"
+        else:
+            loss = F.mse_loss(preds[pred_mask], values[pred_mask])
+            log_key = f"{prefix}/mse"
         self.log(
-            f"{prefix}/mse",
+            log_key,
             loss,
             prog_bar=True,
             batch_size=values.shape[0],
@@ -182,8 +205,84 @@ class MultivariateMambaForecaster(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         return self._compute_loss(batch, "train")
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
+        is_imts_val = (
+            "values_orig" in batch
+            and "value_mu" in batch
+            and "value_std" in batch
+        )
+        if is_imts_val:
+            # Downstream IMTS val: only log the *denormalized* MSE/MAE
+            # in the dataset's original units. The default normalized
+            # huber would be misleading here because per-(b,v) std can
+            # collapse to ``min_std`` for near-constant contexts (e.g.
+            # USHCN precipitation), inflating z-scored future values.
+            self._log_imts_val(batch)
+            return None
+        # Pretraining-style synthetic val: keep existing behavior so
+        # the IMTS benchmark code paths and our pretrain val logs are
+        # both consistent with what was here before.
         return self._compute_loss(batch, "val")
+
+    def _log_imts_val(self, batch) -> None:
+        """Compute val metrics for IMTS downstream eval.
+
+        The downstream val loader produces a batch where ``values`` has
+        already been per-(b,v) standardized:
+
+        - For ``tpatchgnn_data`` (activity, ushcn) the standardization is
+          *context-only*, computed inside ``IMTSValDataset.__getitem__``.
+        - For Time-IMM / IMM-TSF the standardization is *per-record
+          global*, precomputed by the converter to mirror the IMM-TSF
+          paper's normalization (``parse_datasets.py:103-111``).
+
+        We log **two** metric variants so each is comparable to the
+        right reference numbers:
+
+        - ``val/mse_<ds>``    : MSE in **original units** (preds and
+          truth both denormalized with the carried ``value_mu`` /
+          ``value_std``).  Matches what the existing IMTS benchmark
+          (``train_mv.py``) reports for activity/ushcn.
+        - ``val/mse_z_<ds>``  : MSE in **z-scored space** (no
+          denormalization).  Matches what IMM-TSF's
+          ``lib/evaluation.py::compute_error`` reports for "MSE" /
+          "MAE" -- those work on the model's output in z-scored space
+          directly, see lines 27-30.  Required for paper-Table parity
+          on the eight Time-IMM datasets.
+
+        ``val/mae_*`` mirrors the same split.
+        """
+        with torch.no_grad():
+            preds_z = self.forward(batch)            # [B, V, L]
+        mu = batch["value_mu"].to(preds_z.dtype)     # [B, V]
+        std = batch["value_std"].to(preds_z.dtype)   # [B, V]
+        truth_z = batch["values"].to(preds_z.dtype)
+        preds_orig = preds_z * std.unsqueeze(-1) + mu.unsqueeze(-1)
+        truth_orig = batch["values_orig"].to(preds_orig.dtype)
+        pm = batch["pred_mask"]
+        if pm.sum() == 0:
+            return
+
+        diff_z = (preds_z - truth_z)[pm]
+        diff_orig = (preds_orig - truth_orig)[pm]
+        mse_z = (diff_z.float() ** 2).mean()
+        mae_z = diff_z.float().abs().mean()
+        mse = (diff_orig.float() ** 2).mean()
+        mae = diff_orig.float().abs().mean()
+
+        # All samples in a batch come from one dataset (val loaders are
+        # per-dataset). Take the first tag.
+        ds_names = batch.get("dataset_name", [])
+        ds = ds_names[0] if ds_names else "imts"
+        bs = preds_orig.shape[0]
+        # Original-units metrics: prog_bar on so we can eyeball model
+        # health during training; not paper-comparable for IMM-TSF.
+        self.log(f"val/mse_{ds}", mse, batch_size=bs, prog_bar=True, add_dataloader_idx=False)
+        self.log(f"val/mae_{ds}", mae, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
+        # z-scored metrics: paper-comparable for IMM-TSF
+        # (parse_datasets.py:103-111 + evaluation.py:27-30).
+        self.log(f"val/mse_z_{ds}", mse_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
+        self.log(f"val/mae_z_{ds}", mae_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
 
     def test_step(self, batch, batch_idx):
         values = batch["values"]
@@ -238,6 +337,14 @@ class MultivariateMambaForecaster(pl.LightningModule):
                 per_var_mse[f"abs_err_sum_v{d}"] = float(np.sum(np.abs(y_t - y_p)))
                 per_var_mse[f"count_v{d}"] = int(len(y_t))
                 per_var_mse[f"n_obs_v{d}"] = int(obs_counts[d])
+                # Streaming sums for the global per-variable R² / Pearson
+                # aggregator in on_test_epoch_end (see shared_config.global_metrics).
+                # Cheap (O(L) per sample, per variable) and JSON-serialisable.
+                per_var_mse[f"sum_y_v{d}"]   = float(y_t.sum())
+                per_var_mse[f"sum_y2_v{d}"]  = float((y_t * y_t).sum())
+                per_var_mse[f"sum_yh_v{d}"]  = float(y_p.sum())
+                per_var_mse[f"sum_yh2_v{d}"] = float((y_p * y_p).sum())
+                per_var_mse[f"sum_yyh_v{d}"] = float((y_t * y_p).sum())
 
             # Phase 4 gap-region metrics for the gapped variate d ∈ {0,1,2}.
             # Phase 4-1 (fixed_v3): d always = 2. Phase 4-2 (random_uniform):
@@ -274,22 +381,43 @@ class MultivariateMambaForecaster(pl.LightningModule):
     def on_test_epoch_end(self):
         if not self._test_outputs:
             return
-        # Global target-weighted aggregation for MSE and MAE so test reporting
-        # uses the same SSE/N denominator as the training loss (F.mse_loss on
-        # pred_mask positions). R^2 and Pearson stay sample-averaged (they are
-        # per-sample correlation-style scores).
-        total_ss_res = sum(o["ss_res"] for o in self._test_outputs)
-        total_abs_err = sum(o["abs_err_sum"] for o in self._test_outputs)
-        total_count = max(sum(o["count"] for o in self._test_outputs), 1)
+        # MSE/MAE: global target-weighted (SSE/N over all observed targets)
+        # so the reported number matches F.mse_loss's denominator.
+        # R^2 / Pearson: per-variable global, then averaged across variables.
+        # See shared_config.global_metrics for the rationale (the previous
+        # per-sample averaging blew up on USHCN where many samples have
+        # ss_tot ≈ 0 because count_per_sample is 1–5).
+        from imts_benchmark.shared_config.global_metrics import (
+            aggregate_global_metrics,
+        )
+        agg = aggregate_global_metrics(
+            self._test_outputs, n_vars=int(self.hparams.n_vars)
+        )
+        # Keep the legacy per-sample averages too for diagnostics; they are
+        # NOT logged as the canonical test/r2 / test/pearson any more.
+        legacy_r2_per_sample = float(np.mean([o["r2"] for o in self._test_outputs]))
+        legacy_pearson_per_sample = float(
+            np.nanmean([o["pearson"] for o in self._test_outputs])
+        )
         metrics = {
-            "mse": total_ss_res / total_count,
-            "mae": total_abs_err / total_count,
-            "r2": float(np.mean([o["r2"] for o in self._test_outputs])),
-            "pearson": float(np.mean([o["pearson"] for o in self._test_outputs])),
+            "mse": agg["mse"],
+            "mae": agg["mae"],
+            "r2": agg["r2"],
+            "pearson": agg["pearson"],
+            "r2_per_sample_legacy": legacy_r2_per_sample,
+            "pearson_per_sample_legacy": legacy_pearson_per_sample,
         }
         for k, v in metrics.items():
-            self.log(f"test/{k}", v, prog_bar=True)
+            self.log(f"test/{k}", v, prog_bar=k in {"mse", "mae", "r2", "pearson"})
+        # Stash extras (per-variable breakdowns, pooled counts) for downstream
+        # tooling. Lists are kept off the live logger because W&B doesn't
+        # natively log Python lists; train_mv writes them to test_metrics.csv.
         self._test_agg = metrics
+        self._test_agg_extra = {
+            "r2_per_var":      agg["r2_per_var"],
+            "pearson_per_var": agg["pearson_per_var"],
+            "n_per_var":       agg["n_per_var"],
+        }
 
     def configure_optimizers(self):
         no_decay = set()

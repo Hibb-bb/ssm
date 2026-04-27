@@ -1,0 +1,40 @@
+# Stage C — long-context post-training, ~10–15% of training.
+# Goal: extend context, stabilize on real data, keep some regular data
+# so the model does not overspecialize to severe irregularity.
+
+stage:
+  per_var_min_length: 256
+  per_var_max_length: 1024
+  max_variates: 20
+  variate_count_dist:    [0.10, 0.60, 0.25, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.20, 0.50, 0.30]
+  regime_dist:     [0.15, 0.15, 0.45, 0.25]
+  min_ctx_obs_per_target: 3
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+mix:
+  chronos2_synth: 0.25
+  kernelsynth:    0.15
+  lotsa_degraded: 0.40
+  lotsa_regular:  0.20
+
+overrides:
+  chronos2_synth:
+    regime_dist: [0.05, 0.10, 0.45, 0.40]
+    task_type_probs: [0.10, 0.65, 0.25]
+  kernelsynth:
+    regime_dist: [0.05, 0.10, 0.40, 0.45]
+    task_type_probs: [0.20, 0.55, 0.25]
+  lotsa_regular:
+    regime_dist: [1.0, 0.0, 0.0, 0.0]
+    task_type_probs: [0.20, 0.55, 0.25]
+    clean_target_mode: false
+  lotsa_degraded:
+    regime_dist: [0.0, 0.20, 0.55, 0.25]
+    task_type_probs: [0.20, 0.50, 0.30]
+    clean_target_mode: true
