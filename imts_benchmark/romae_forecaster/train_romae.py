@@ -134,12 +134,21 @@ def main():
         best_val = float(callbacks[0].best_model_score)
     log_wandb_after_fit(wandb_logger, wall_fit, best_val)
 
+    # See train_mv.py for context: long fits on PhysioNet trigger a SIGABRT
+    # during trainer.test() below Python. Defensive cleanup before test phase
+    # consistently across S5/RoMAE/Mamba-MV.
+    import gc, torch
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
     if best_ckpt:
-        print(f"Best checkpoint: {best_ckpt}")
-        print(f"Best val/mse: {float(callbacks[0].best_model_score):.6f}")
+        print(f"Best checkpoint: {best_ckpt}", flush=True)
+        print(f"Best val/mse: {float(callbacks[0].best_model_score):.6f}", flush=True)
         trainer.test(model, dm, ckpt_path=best_ckpt)
     else:
-        print("No checkpoint saved, testing with last model")
+        print("No checkpoint saved, testing with last model", flush=True)
         trainer.test(model, dm)
 
     metrics_row = {

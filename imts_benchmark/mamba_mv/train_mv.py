@@ -169,12 +169,23 @@ def main():
         best_val = float(callbacks[0].best_model_score)
     log_wandb_after_fit(wandb_logger, wall_fit, best_val)
 
+    # On long PhysioNet fits the trainer.test() phase has been observed to
+    # SIGABRT below Python (no traceback) on Delta GH (jobs 2197568, 2197588).
+    # Theory: CUDA caches accumulated during a multi-hour fit interact poorly
+    # with checkpoint-reload + a fresh test pass. Explicitly drop refs, garbage
+    # collect, empty the allocator's cache, and synchronise before test.
+    import gc, torch
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
     if best_ckpt:
-        print(f"Best checkpoint: {best_ckpt}")
-        print(f"Best val/mse: {float(callbacks[0].best_model_score):.6f}")
+        print(f"Best checkpoint: {best_ckpt}", flush=True)
+        print(f"Best val/mse: {float(callbacks[0].best_model_score):.6f}", flush=True)
         trainer.test(model, dm, ckpt_path=best_ckpt)
     else:
-        print("No checkpoint saved, testing with last model")
+        print("No checkpoint saved, testing with last model", flush=True)
         trainer.test(model, dm)
 
     metrics_row = {"model": "mamba_mv", "variant": args.dt_mode, "regime": args.regime, "seed": args.seed}
