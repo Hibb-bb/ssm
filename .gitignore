@@ -21,3 +21,10 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# Local build/smoke logs and debug
+/logs/
+tea_debug.log
+
+# Last-known-good sbatch backups (kept on disk per CLAUDE.md)
+*.sbatch.bak

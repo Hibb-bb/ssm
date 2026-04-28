@@ -25,25 +25,46 @@ ROOT = Path("/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts
 OUT = ROOT / "aggregate"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# T-PatchGNN paper Table 1 anchors (numbers in raw scale, before scaling)
+# T-PatchGNN paper Table 1 anchors (numbers in raw scale, before scaling).
+# PhysioNet uses the same display scale as Activity (×10⁻³ / ×10⁻²).
 PAPER = {
-    "activity": {"mse": 2.66e-3, "mae": 3.15e-2, "ms": 1e-3, "as": 1e-2,
-                 "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
-    "ushcn":    {"mse": 5.00e-1, "mae": 3.08e-1, "ms": 1e-1, "as": 1e-1,
-                 "mse_disp": "MSE×10⁻¹", "mae_disp": "MAE×10⁻¹"},
+    "activity":  {"mse": 2.66e-3, "mae": 3.15e-2, "ms": 1e-3, "as": 1e-2,
+                  "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
+    "ushcn":     {"mse": 5.00e-1, "mae": 3.08e-1, "ms": 1e-1, "as": 1e-1,
+                  "mse_disp": "MSE×10⁻¹", "mae_disp": "MAE×10⁻¹"},
+    "physionet": {"mse": 4.98e-3, "mae": 3.72e-2, "ms": 1e-3, "as": 1e-2,
+                  "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
 }
 
-# Where each (model, variant) lives in the output tree.
-# variant_dir = the directory name under model_p10/{ds}/<variant_dir>/
+DATASETS = ("activity", "ushcn", "physionet")
+
+# Per-(model, variant, dataset) variant directory layout under model_p10/{ds}/.
+# PhysioNet: bs=32 + accum=4 (eff bs=128) — required for V=41 OOM mitigation.
+# PhysioNet lr borrows USHCN's per-dt_mode HPO winner (closest analog).
+_MV_VARIANT = {
+    "replace": {
+        "activity":  ["replace_lr-2e-3_bs-128"],
+        "ushcn":     ["replace_lr-5e-4_bs-64"],
+        "physionet": ["replace_lr-5e-4_bs-32_accum-4"],
+    },
+    "learned": {
+        "activity":  ["learned_lr-2e-3_bs-128"],
+        "ushcn":     ["learned_lr-1e-4_bs-256"],
+        "physionet": ["learned_lr-1e-4_bs-32_accum-4"],
+    },
+    "concat": {
+        "activity":  ["concat_lr-5e-4_bs-128"],
+        "ushcn":     ["concat_lr-1e-4_bs-256"],
+        "physionet": ["concat_lr-1e-4_bs-32_accum-4"],
+    },
+}
+
 SOURCES = [
     ("S5",       "default", "s5_p10",       lambda ds: ["default"]),
     ("RoMAE",    "default", "romae_p10",    lambda ds: ["default"]),
-    ("Mamba-MV", "replace", "mamba_mv_p10",
-                 lambda ds: ["replace_lr-2e-3_bs-128"] if ds == "activity" else ["replace_lr-5e-4_bs-64"]),
-    ("Mamba-MV", "learned", "mamba_mv_p10",
-                 lambda ds: ["learned_lr-2e-3_bs-128"] if ds == "activity" else ["learned_lr-1e-4_bs-256"]),
-    ("Mamba-MV", "concat",  "mamba_mv_p10",
-                 lambda ds: ["concat_lr-5e-4_bs-128"] if ds == "activity" else ["concat_lr-1e-4_bs-256"]),
+    ("Mamba-MV", "replace", "mamba_mv_p10", lambda ds: _MV_VARIANT["replace"][ds]),
+    ("Mamba-MV", "learned", "mamba_mv_p10", lambda ds: _MV_VARIANT["learned"][ds]),
+    ("Mamba-MV", "concat",  "mamba_mv_p10", lambda ds: _MV_VARIANT["concat"][ds]),
 ]
 
 
@@ -65,7 +86,7 @@ def read_csv_row(path: str) -> dict:
 def collect():
     rows = []
     for model, variant, top_dir, variant_dirs_fn in SOURCES:
-        for ds in ("activity", "ushcn"):
+        for ds in DATASETS:
             for variant_dir in variant_dirs_fn(ds):
                 pattern = ROOT / top_dir / ds / variant_dir / "seed*" / "test_metrics.csv"
                 seeds_data = {"mse": [], "mae": [], "mse_tpg": [], "mae_tpg": [],
@@ -106,7 +127,7 @@ def write_markdown(rows, path):
              "Aggregated from p10 (5 seeds, patience=10) re-runs after metric fix.\n",
              "- `MSE` / `MAE` — target-weighted (Σ SS / Σ count)",
              "- `MSE_tpg` / `MAE_tpg` — variable-averaged ((1/V) Σ SS_d/count_d), matches T-PatchGNN paper convention\n"]
-    for ds in ("activity", "ushcn"):
+    for ds in DATASETS:
         cfg = PAPER[ds]
         lines.append(f"\n## {ds.upper()} ({cfg['mse_disp']} / {cfg['mae_disp']})\n")
         lines.append(f"| Model | Variant | n | MSE (ours, target-wgt) | **MSE (TPG, variable-avg)** | MAE (ours) | **MAE (TPG)** | R² |")
@@ -135,7 +156,7 @@ def main():
 
     # quick on-screen summary
     print("\n--- Quick summary (variable-averaged MSE, the headline) ---")
-    for ds in ("activity", "ushcn"):
+    for ds in DATASETS:
         cfg = PAPER[ds]
         rs_ds = [r for r in rows if r["dataset"] == ds]
         rs_ds.sort(key=lambda r: r["mse_tpg_mean"])

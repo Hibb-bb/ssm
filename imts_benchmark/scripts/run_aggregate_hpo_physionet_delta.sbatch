@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --account=bfrf-dtai-gh
+#SBATCH --job-name=mv_hpo_pick
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --gpus-per-node=1
+#SBATCH --partition=ghx4-interactive
+#SBATCH --time=00:15:00
+#SBATCH --output=/projects/bfrf/seojininus/ssm/output/log/imts_benchmark_v2_real/hpo_mamba_mv_phy/aggregate_%j.out
+#SBATCH --error=/projects/bfrf/seojininus/ssm/output/log/imts_benchmark_v2_real/hpo_mamba_mv_phy/aggregate_%j.err
+#SBATCH --mail-user=dhjrzzang@gmail.com
+#SBATCH --mail-type=END,FAIL
+
+# CPU-only job: read 27 HPO cells' best.ckpt val/mse, pick winner per dt_mode,
+# write winners_by_dt_mode.json. Submitted with afterok dependency on the HPO
+# sweep array; the confirm array depends on this job in turn.
+
+set -euo pipefail
+
+ENV_PATH=/projects/bfrf/seojininus/envs/mamba
+CODE_DIR=/projects/bfrf/seojininus/ssm
+HPO_DIR=${CODE_DIR}/output/log/imts_benchmark_v2_real/hpo_mamba_mv_phy
+
+source /sw/user/python/miniforge3-pytorch-2.5.0/etc/profile.d/conda.sh
+conda activate "${ENV_PATH}"
+export PYTHONNOUSERSITE=1
+
+cd "${CODE_DIR}"
+echo "Aggregating HPO winners from ${HPO_DIR}"
+echo "Time: $(date)"
+
+python -m imts_benchmark.eval.aggregate_hpo_winners_physionet \
+    --hpo_log_dir "${HPO_DIR}"
+
+EXIT_CODE=$?
+echo "aggregate exit code: ${EXIT_CODE}  $(date)"
+exit ${EXIT_CODE}
