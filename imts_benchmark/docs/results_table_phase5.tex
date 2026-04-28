@@ -6,7 +6,7 @@
 % Required: \usepackage{booktabs}
 
 \begin{table}[t]
-\caption{Forecasting performance on real IMTS datasets (mean$_{\pm\text{std}}$ over 5 seeds, patience=10, val/MSE early-stopping). Top block: published baselines from Zhang et al.\ (ICML 2024) Table 1, all reproduced at hidden\_dim=32 for Activity/USHCN per their Sec.~5.1.2 ($\sim$150--300K parameters; T-PatchGNN itself is 165K on Activity, 168K on USHCN). Bottom block: our runs at TSFM-scale parameter budgets (S5 1.4M, RoMAE 7.8M, Mamba-MV 7.8M); the $\sim$47$\times$ size disparity vs.\ T-PatchGNN should be considered when interpreting the comparison. \textbf{Bold} = best per column; \underline{underline} = second-best. Em-dashes mark datasets we have not run.}
+\caption{Forecasting performance on real IMTS datasets (mean$_{\pm\text{std}}$ over 5 seeds, patience=10, val/MSE early-stopping). \emph{Metric}: variable-averaged MSE/MAE matching the T-PatchGNN reference implementation, i.e.\ $\frac{1}{V_{\text{avail}}}\sum_d \frac{1}{N_d}\sum_n (y_{d,n}-\hat y_{d,n})^2$ rather than the target-weighted form $\sum_d\sum_n / \sum_d N_d$; the two differ by $\leq$2.3\% in our setting and never change the model ranking. Top block: published baselines from Zhang et al.\ (ICML 2024) Table 1, all reproduced at hidden\_dim=32 for Activity/USHCN per their Sec.~5.1.2 ($\sim$150--300K parameters; T-PatchGNN itself is 165K on Activity, 168K on USHCN). Bottom block: our runs at TSFM-scale parameter budgets (S5 1.4M, RoMAE 7.8M, Mamba-MV 7.8M); the $\sim$47$\times$ size disparity vs.\ T-PatchGNN should be considered when interpreting the comparison. \textbf{Bold} = best per column; \underline{underline} = second-best. Em-dashes mark datasets we have not run.}
 \label{tab:imts_real_results}
 \centering
 \setlength{\tabcolsep}{3pt}
@@ -25,11 +25,11 @@ CRU          & 8.56$_{\pm 0.26}$ & 5.16$_{\pm 0.09}$ & 1.97$_{\pm 0.02}$ & 7.93$
 Neural Flow  & 7.20$_{\pm 0.07}$ & 4.67$_{\pm 0.04}$ & 1.87$_{\pm 0.05}$ & 8.03$_{\pm 0.19}$ & 4.05$_{\pm 0.13}$ & 4.46$_{\pm 0.09}$ & 5.35$_{\pm 0.05}$ & 3.25$_{\pm 0.05}$ \\
 T-PatchGNN   & \textbf{4.98$_{\pm 0.08}$} & \textbf{3.72$_{\pm 0.03}$} & \textbf{1.69$_{\pm 0.03}$} & \textbf{7.22$_{\pm 0.09}$} & \underline{2.66$_{\pm 0.03}$} & \textbf{3.15$_{\pm 0.02}$} & \underline{5.00$_{\pm 0.04}$} & \textbf{3.08$_{\pm 0.04}$} \\
 \midrule
-S5                & --- & --- & --- & --- & 16.30$_{\pm 0.04}$ & 10.23$_{\pm 0.01}$ & 5.25$_{\pm 0.04}$ & 3.20$_{\pm 0.07}$ \\
-RoMAE             & --- & --- & --- & --- & \textbf{2.62$_{\pm 0.02}$} & \underline{3.18$_{\pm 0.02}$} & \textbf{4.94$_{\pm 0.04}$} & \underline{3.10$_{\pm 0.06}$} \\
-Mamba-MV (replace)& --- & --- & --- & --- & 2.80$_{\pm 0.01}$ & 3.35$_{\pm 0.02}$ & 5.23$_{\pm 0.11}$ & 3.33$_{\pm 0.28}$ \\
-Mamba-MV (learned)& --- & --- & --- & --- & 2.85$_{\pm 0.04}$ & 3.36$_{\pm 0.02}$ & 5.17$_{\pm 0.03}$ & 3.35$_{\pm 0.14}$ \\
-Mamba-MV (concat) & --- & --- & --- & --- & 2.98$_{\pm 0.03}$ & 3.45$_{\pm 0.03}$ & 5.16$_{\pm 0.04}$ & 3.33$_{\pm 0.08}$ \\
+S5                & 19.93$_{\pm 0.09}$ & 8.83$_{\pm 0.06}$ & --- & --- & 16.68$_{\pm 0.04}$ & 10.33$_{\pm 0.02}$ & 5.19$_{\pm 0.04}$ & 3.19$_{\pm 0.07}$ \\
+RoMAE             & 6.88$_{\pm 0.99}$ & 4.37$_{\pm 0.25}$ & --- & --- & \textbf{2.62$_{\pm 0.02}$} & \underline{3.18$_{\pm 0.02}$} & \textbf{4.88$_{\pm 0.04}$} & \underline{3.09$_{\pm 0.06}$} \\
+Mamba-MV (replace)& --- & --- & --- & --- & 2.84$_{\pm 0.03}$ & 3.37$_{\pm 0.03}$ & 5.18$_{\pm 0.15}$ & 3.33$_{\pm 0.39}$ \\
+Mamba-MV (learned)& --- & --- & --- & --- & 2.85$_{\pm 0.04}$ & 3.37$_{\pm 0.03}$ & 5.12$_{\pm 0.09}$ & 3.30$_{\pm 0.15}$ \\
+Mamba-MV (concat) & --- & --- & --- & --- & 2.99$_{\pm 0.03}$ & 3.46$_{\pm 0.03}$ & 5.11$_{\pm 0.04}$ & 3.35$_{\pm 0.10}$ \\
 \bottomrule
 \end{tabular}
 \end{table}

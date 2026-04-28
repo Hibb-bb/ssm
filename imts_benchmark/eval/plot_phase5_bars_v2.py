@@ -24,11 +24,14 @@ CSV  = ROOT / "aggregate" / "phase5_consolidated_v2.csv"
 OUT  = ROOT / "aggregate"
 
 PAPER = {
-    "activity": {"mse": 2.66, "mae": 3.15, "mse_unit": r"MSE $\times 10^{-3}$", "mae_unit": r"MAE $\times 10^{-2}$",
-                 "ms": 1e-3, "as": 1e-2},
-    "ushcn":    {"mse": 5.00, "mae": 3.08, "mse_unit": r"MSE $\times 10^{-1}$", "mae_unit": r"MAE $\times 10^{-1}$",
-                 "ms": 1e-1, "as": 1e-1},
+    "physionet": {"mse": 4.98, "mae": 3.72, "mse_unit": r"MSE $\times 10^{-3}$", "mae_unit": r"MAE $\times 10^{-2}$",
+                  "ms": 1e-3, "as": 1e-2},
+    "activity":  {"mse": 2.66, "mae": 3.15, "mse_unit": r"MSE $\times 10^{-3}$", "mae_unit": r"MAE $\times 10^{-2}$",
+                  "ms": 1e-3, "as": 1e-2},
+    "ushcn":     {"mse": 5.00, "mae": 3.08, "mse_unit": r"MSE $\times 10^{-1}$", "mae_unit": r"MAE $\times 10^{-1}$",
+                  "ms": 1e-1, "as": 1e-1},
 }
+DATASETS = tuple(PAPER.keys())
 
 LABEL = {
     ("S5", "default"):       ("S5",                "#4c72b0"),
@@ -71,7 +74,7 @@ def make_dataset_panel(ax, ds, rows_ds, by_key, metric, std_metric, scale, ylabe
         r = by_key[k]
         labels.append(name); colors.append(color)
         means_ours.append(r[metric] / scale);   stds_ours.append(r[std_metric] / scale)
-        means_tpg.append(r[metric + "_tpg"] / scale);   stds_tpg.append(r[std_metric + "_tpg"] / scale)
+        means_tpg.append(r[metric + "_tpg"] / scale);   stds_tpg.append(r[metric + "_tpg_std"] / scale)
 
     x = np.arange(len(labels))
     width = 0.38
@@ -125,8 +128,11 @@ def make_per_dataset_plot(ds, rows_ds, save_dir):
 
 
 def make_combined_plot(rows, save_dir):
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
-    for j, ds in enumerate(("activity", "ushcn")):
+    n_ds = len(DATASETS)
+    fig, axes = plt.subplots(n_ds, 2, figsize=(13, 4 * n_ds))
+    if n_ds == 1:
+        axes = axes.reshape(1, 2)
+    for j, ds in enumerate(DATASETS):
         cfg = PAPER[ds]
         rows_ds = [r for r in rows if r["dataset"] == ds]
         by_key = {(r["model"], r["variant"]): r for r in rows_ds}
@@ -155,7 +161,7 @@ def main():
     rows = load_rows()
     print(f"Loaded {len(rows)} aggregate rows.")
     save_dir = OUT
-    for ds in ("activity", "ushcn"):
+    for ds in DATASETS:
         rows_ds = [r for r in rows if r["dataset"] == ds]
         if rows_ds:
             make_per_dataset_plot(ds, rows_ds, save_dir)

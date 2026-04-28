@@ -34,6 +34,7 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     exit 1
 fi
 export WANDB_MODE=online
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 MAMBA_ENV=/projects/b1094/StarEmbed/pythonenvs/mamba
 CODE_DIR=/projects/b1094/StarEmbed/skai_universal_forecaster/src/train/moirai/uni2ts_hongyu/ssm_dk
@@ -56,7 +57,10 @@ echo "Time: $(date)"
 cd $CODE_DIR
 START=$(date +%s)
 
-# PhysioNet has V=41, larger sequences -> bs=32 + accum=4 (eff bs=128)
+# PhysioNet V=41, N_max~1500. S5's vmap stores [bs,V,N,state,hidden]
+# tensors -> OOM at bs=32 (36GB alloc) and bs=8 (10GB alloc on top of
+# 70GB accumulated graph). Try bs=1 + accum=128 (eff bs=128 unchanged,
+# vmap chunk shrinks 8x).
 srun ${MAMBA_ENV}/bin/python -m imts_benchmark.s5_forecaster.train_s5 \
     --data_root $DATA_ROOT \
     --regime $DS \
@@ -64,8 +68,9 @@ srun ${MAMBA_ENV}/bin/python -m imts_benchmark.s5_forecaster.train_s5 \
     --seed $SEED \
     --lr 1e-3 \
     --weight_decay 0.05 \
-    --train_batch_size 32 \
-    --accumulate_grad_batches 4 \
+    --train_batch_size 1 \
+    --val_batch_size 1 \
+    --accumulate_grad_batches 128 \
     --patience 10 \
     --output_dir $OUTPUT_DIR \
     --use_wandb \
