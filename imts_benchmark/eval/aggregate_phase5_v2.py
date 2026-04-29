@@ -25,46 +25,35 @@ ROOT = Path("/projects/b1094/StarEmbed/skai_universal_forecaster/output/log/imts
 OUT = ROOT / "aggregate"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# T-PatchGNN paper Table 1 anchors (numbers in raw scale, before scaling).
-# PhysioNet uses the same display scale as Activity (×10⁻³ / ×10⁻²).
+# T-PatchGNN paper Table 1 anchors (numbers in raw scale, before scaling)
 PAPER = {
+    "physionet": {"mse": 4.98e-3, "mae": 3.72e-2, "ms": 1e-3, "as": 1e-2,
+                  "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
     "activity":  {"mse": 2.66e-3, "mae": 3.15e-2, "ms": 1e-3, "as": 1e-2,
                   "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
     "ushcn":     {"mse": 5.00e-1, "mae": 3.08e-1, "ms": 1e-1, "as": 1e-1,
                   "mse_disp": "MSE×10⁻¹", "mae_disp": "MAE×10⁻¹"},
-    "physionet": {"mse": 4.98e-3, "mae": 3.72e-2, "ms": 1e-3, "as": 1e-2,
-                  "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
 }
 
-DATASETS = ("activity", "ushcn", "physionet")
+DATASETS = tuple(PAPER.keys())
 
-# Per-(model, variant, dataset) variant directory layout under model_p10/{ds}/.
-# PhysioNet: bs=32 + accum=4 (eff bs=128) — required for V=41 OOM mitigation.
-# PhysioNet lr borrows USHCN's per-dt_mode HPO winner (closest analog).
-_MV_VARIANT = {
-    "replace": {
-        "activity":  ["replace_lr-2e-3_bs-128"],
-        "ushcn":     ["replace_lr-5e-4_bs-64"],
-        "physionet": ["replace_lr-5e-4_bs-32_accum-4"],
-    },
-    "learned": {
-        "activity":  ["learned_lr-2e-3_bs-128"],
-        "ushcn":     ["learned_lr-1e-4_bs-256"],
-        "physionet": ["learned_lr-1e-4_bs-32_accum-4"],
-    },
-    "concat": {
-        "activity":  ["concat_lr-5e-4_bs-128"],
-        "ushcn":     ["concat_lr-1e-4_bs-256"],
-        "physionet": ["concat_lr-1e-4_bs-32_accum-4"],
-    },
-}
-
+# Where each (model, variant) lives in the output tree.
+# variant_dir = the directory name under model_p10/{ds}/<variant_dir>/
 SOURCES = [
     ("S5",       "default", "s5_p10",       lambda ds: ["default"]),
     ("RoMAE",    "default", "romae_p10",    lambda ds: ["default"]),
-    ("Mamba-MV", "replace", "mamba_mv_p10", lambda ds: _MV_VARIANT["replace"][ds]),
-    ("Mamba-MV", "learned", "mamba_mv_p10", lambda ds: _MV_VARIANT["learned"][ds]),
-    ("Mamba-MV", "concat",  "mamba_mv_p10", lambda ds: _MV_VARIANT["concat"][ds]),
+    ("Mamba-MV", "replace", "mamba_mv_p10",
+                 lambda ds: {"activity":  ["replace_lr-2e-3_bs-128"],
+                             "ushcn":     ["replace_lr-5e-4_bs-64"],
+                             "physionet": ["replace_lr-2e-3_bs-8x16"]}.get(ds, [])),
+    ("Mamba-MV", "learned", "mamba_mv_p10",
+                 lambda ds: {"activity":  ["learned_lr-2e-3_bs-128"],
+                             "ushcn":     ["learned_lr-1e-4_bs-256"],
+                             "physionet": ["learned_lr-2e-3_bs-8x8"]}.get(ds, [])),
+    ("Mamba-MV", "concat",  "mamba_mv_p10",
+                 lambda ds: {"activity":  ["concat_lr-5e-4_bs-128"],
+                             "ushcn":     ["concat_lr-1e-4_bs-256"],
+                             "physionet": ["concat_lr-2e-3_bs-16_accum-4"]}.get(ds, [])),
 ]
 
 

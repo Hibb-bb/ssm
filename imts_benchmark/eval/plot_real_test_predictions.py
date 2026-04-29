@@ -261,12 +261,12 @@ def main():
                     help="for activity (V=12) we only show first N variates per sample")
     ap.add_argument("--device",  type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--all",     action="store_true",
-                    help="auto-find checkpoints for s5+romae+mamba_mv on activity+ushcn at --seed")
+                    help="auto-find checkpoints for s5+romae+mamba_mv on activity+ushcn+physionet at --seed")
     args = ap.parse_args()
 
     if args.all:
         for model_name in ("s5", "romae", "mamba_mv"):
-            for regime in ("activity", "ushcn"):
+            for regime in ("activity", "ushcn", "physionet"):
                 cands = find_checkpoints_for_dataset(model_name, regime, args.seed)
                 if not cands:
                     print(f"[skip] no checkpoint for {model_name}/{regime}/seed{args.seed}")
