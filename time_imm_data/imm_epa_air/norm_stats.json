@@ -1,0 +1,19 @@
+{
+  "n_vars": 4,
+  "history": 7.0,
+  "time_max": 14.0,
+  "data_min": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "data_max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "normalize_vals": false,
+  "dataset": "imm_epa_air"
+}

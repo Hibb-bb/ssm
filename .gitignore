@@ -16,11 +16,14 @@ __pycache__/
 # Vendored upstream repos (cloned in place for reference; do not commit)
 **/_romae_repo/
 **/_upstream/
+**/_imm_tsf_repo/
+**/_time_imm_repo/
 
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
+.claude/
 
 # Local build/smoke logs and debug
 /logs/

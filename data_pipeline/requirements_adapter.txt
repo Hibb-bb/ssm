@@ -1,0 +1,12 @@
+# Minimal extras for data_pipeline/import_timeimm.py (the TIME-IMM -> sparse-flat
+# Arrow adapter). The adapter imports IMM-TSF's lib/parse_datasets.py which in
+# turn imports lib/utils.py; together they need:
+#
+#   torch, numpy, pandas, scikit-learn  (already in requirements_delta.txt)
+#   datasets, pyarrow                   (already in requirements_delta.txt)
+#   prettytable                         (NOT in requirements_delta.txt -- this file)
+#
+# Install on top of an existing mamba_x86 / mamba env:
+#   pip install -r data_pipeline/requirements_adapter.txt
+
+prettytable>=3.0

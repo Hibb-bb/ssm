@@ -161,6 +161,7 @@ PHASE_MAP = {
     "data_correct_gap": "phase4_1",
     "data_correct_gap_random": "phase4_2",
     "tpatchgnn_data": "phase5_real",
+    "time_imm_data": "phase6_imm",
 }
 
 

@@ -1,0 +1,29 @@
+{
+  "n_vars": 9,
+  "history": 31.0,
+  "time_max": 62.0,
+  "data_min": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "data_max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "normalize_vals": false,
+  "dataset": "imm_studentlife"
+}
