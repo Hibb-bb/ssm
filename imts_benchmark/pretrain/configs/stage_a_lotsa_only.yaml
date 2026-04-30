@@ -1,0 +1,52 @@
+# Stage A — LOTSA-only ablation (no synthetic).
+#
+# This is the third arm of the §7.F axis-4 ablation
+# (`axis4_lotsa_only`).  Designed to answer the question:
+#
+#     "Do we actually need a synthetic warm-start at all?
+#      What if we go straight to LOTSA from scratch, half regular
+#      half degraded?"
+#
+# Mix:
+#   axis4_synth_only  : 100% synthetic                        (stage_a.yaml)
+#   axis4_synth_lotsa : 80% synthetic + 20% regular LOTSA     (stage_a_with_lotsa.yaml)
+#   axis4_lotsa_only  : 50% regular LOTSA + 50% degraded LOTSA (this file)
+#
+# Stage hparams identical to stage_a.yaml so the only varying axis
+# is the source mix.  Uses the same regime_dist on the *stage* (which
+# applies to any source not overridden); both lotsa_regular and
+# lotsa_degraded carry their own regime_dist override below so the
+# stage-level value mostly affects the mixing math.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 256
+  max_variates: 20
+  variate_count_dist:    [0.10, 0.60, 0.25, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.20, 0.50, 0.30]
+  regime_dist:     [0.05, 0.10, 0.45, 0.40]
+  min_ctx_obs_per_target: 8
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+# 50% regular LOTSA + 50% degraded LOTSA, no synthetic.
+mix:
+  lotsa_regular:  0.50
+  lotsa_degraded: 0.50
+
+# Per-source overrides — same numbers as stage_b.yaml uses for the
+# LOTSA sources, so the only difference between this run and stage_b
+# is the *absence* of synthetic, plus the smaller per_var window.
+overrides:
+  lotsa_regular:
+    regime_dist: [1.0, 0.0, 0.0, 0.0]
+    task_type_probs: [0.20, 0.55, 0.25]
+    clean_target_mode: false
+  lotsa_degraded:
+    regime_dist: [0.0, 0.20, 0.55, 0.25]
+    task_type_probs: [0.20, 0.50, 0.30]
+    clean_target_mode: true

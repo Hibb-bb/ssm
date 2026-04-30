@@ -1,0 +1,59 @@
+# Stage A — curriculum phase 1 (EASY).
+#
+# Goal: warm-start the model on mostly-regular synthetic data so it
+# learns the basic forecasting task before facing the harder
+# irregularity regimes.  After 10K steps we transition to
+# stage_a_curriculum_main.yaml via --init_from.
+#
+# Curriculum schedule (from user, 2026-04-28):
+#   Phase 1 (this file, steps 0-10K):
+#     regime_dist: [regular 0.50, sync 0.15, mixed 0.25, async 0.10]
+#   Phase 2 (stage_a_curriculum_main.yaml, steps 10K-40K):
+#     regime_dist: [regular 0.30, sync 0.15, mixed 0.35, async 0.20]
+#
+# Source mix is synth-only (70% chronos2 + 30% kernelsynth) for both
+# phases.  Both arrow files were regenerated on 2026-04-28 with:
+#   - chronos2: drop "sq" nonlinearity (was clipping at 1e4),
+#               max_variates 5 -> 12, no baked-in jitter/drop.
+#   - kernelsynth: no baked-in jitter/drop (defaults).
+# All irregularity now comes exclusively from this stage's regime_dist
+# applied via degradation.LOTSAToIrregular.
+#
+# Other pipeline changes since axis4_synth_only baseline (1.27 @ 15K):
+#   - asinh squashing in collate.py (Chronos-2 §3.1) — kills the
+#     USHCN-style z-MSE blowups; min_std floor dropped 1e-3 -> 1e-6.
+#   - StartDelay removed from async regime — was dropping up to 50%
+#     of per-variate prefix on top of RandomDrops + RegularGaps.
+#   - min_ctx_obs_per_target bumped 3 -> 8.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 256
+  max_variates: 20
+  variate_count_dist:    [0.10, 0.60, 0.25, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.20, 0.50, 0.30]
+  # CURRICULUM PHASE 1: easy regime mix, mostly regular
+  regime_dist:     [0.50, 0.15, 0.25, 0.10]
+  min_ctx_obs_per_target: 8
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+mix:
+  chronos2_synth: 0.70
+  kernelsynth:    0.30
+
+# Per-source overrides explicitly set regime_dist to match the
+# stage-level value, so the curriculum is fully effective on both
+# sources.  task_type_probs differ per source (chronos2 leans more
+# multivariate-target, kernelsynth more partial-target).
+overrides:
+  chronos2_synth:
+    regime_dist: [0.50, 0.15, 0.25, 0.10]
+    task_type_probs: [0.10, 0.65, 0.25]
+  kernelsynth:
+    regime_dist: [0.50, 0.15, 0.25, 0.10]
+    task_type_probs: [0.20, 0.55, 0.25]

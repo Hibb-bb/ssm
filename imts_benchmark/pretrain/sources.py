@@ -221,6 +221,220 @@ class LOTSAHFSource(IterableSource):
 
 
 # ---------------------------------------------------------------------------
+# Moirai-style multi-sample stacking for univariate LOTSA datasets
+# ---------------------------------------------------------------------------
+
+# Moirai's curated MULTI_SAMPLE_DATASETS lists, copied verbatim from:
+#   uni2ts/src/uni2ts/data/builder/lotsa_v1/{gluonts,proenfo,others,
+#                                            buildings_bench,subseasonal,
+#                                            lib_city}.py
+#
+# Each builder file has its own list; we union them.  Datasets in this
+# union are passed through ``StackedLOTSASource`` instead of
+# ``LOTSAHFSource``.  See README §7.N for the rationale and the
+# diff to Moirai's exact behavior (we use OUR ``variate_count_dist``
+# bucketing instead of beta_binomial(2, 5), since most of our IMM-TSF
+# eval sets sit in V=4..11 — see Table 1 of the IMM-TSF paper).
+MOIRAI_STACKING_DATASETS: tuple[str, ...] = (
+    # gluonts.py
+    "oikolab_weather",
+    "kaggle_web_traffic_weekly",
+    "extended_web_traffic_with_missing",
+    "m5",
+    "nn5_daily_with_missing",
+    "nn5_weekly",
+    "traffic_hourly",
+    "traffic_weekly",
+    "rideshare_with_missing",
+    "temperature_rain_with_missing",
+    "car_parts_with_missing",
+    "fred_md",
+    "hospital",
+    "covid_deaths",
+    # proenfo.py
+    "gfc12_load",
+    "gfc17_load",
+    "bull",
+    "hog",
+    # others.py
+    "godaddy",
+    "hierarchical_sales",
+    "beijing_air_quality",
+    # buildings_bench.py
+    "bdg-2_panther",
+    # lib_city.py and subseasonal.py: every dataset in the dataset_list
+    # uses MultiSampleTimeSeriesDataset.  Most of those are already
+    # multivariate-on-disk (LOOP_SEATTLE, PEMS_BAY, subseasonal etc.),
+    # so stacking is a no-op for them — we keep them in the list anyway
+    # for completeness and future-proofing.
+    "BEIJING_SUBWAY_30MIN",
+    "HZMETRO",
+    "LOOP_SEATTLE",
+    "LOS_LOOP",
+    "M_DENSE",
+    "PEMS03",
+    "PEMS04",
+    "PEMS07",
+    "PEMS08",
+    "PEMS_BAY",
+    "Q-TRAFFIC",
+    "SHMETRO",
+    "SZ_TAXI",
+    "subseasonal",
+    "subseasonal_precip",
+)
+
+
+# Default per-bucket distribution; can be overridden per-source.
+# Buckets: P[V=1], P[V=2..8], P[V=9..16], P[V=17..max_variates].
+# This matches our ``stage_a_single_phase.yaml::variate_count_dist`` and
+# is tilted toward V=9..16 because 5 of our 8 IMM-TSF eval datasets live
+# there (StudentLife=9, RepoHealth=10, CESNET=10, ILINet=11,
+# ClusterTrace=11; see IMM-TSF Table 1).
+_DEFAULT_VARIATE_COUNT_DIST = (0.05, 0.35, 0.55, 0.05)
+
+
+@dataclass
+class StackedLOTSASource(LOTSAHFSource):
+    """Univariate-on-disk LOTSA source that stacks K random series per item.
+
+    Implements Moirai's ``MultiSampleTimeSeriesDataset`` recipe (Woo et
+    al., 2024, §3.2: "constructing multivariate time series from
+    sub-datasets with univariate time series, by randomly concatenating
+    them"; ``uni2ts/src/uni2ts/data/dataset.py:MultiSampleTimeSeriesDataset``).
+
+    Per ``__iter__`` step:
+      1.  Peek at one random record.  If it's natively multivariate
+          (``target.shape[0] > 1``), pass through unchanged via the
+          parent's ``__iter__``.
+      2.  Otherwise stack ``stack_K = min(max_variates, num_ts)`` random
+          series into ``[stack_K, T]``, truncated to the shortest series
+          length.  The downstream :class:`LOTSAToIrregular._sample_n_var`
+          is then the single source of truth for the model-seen V
+          distribution — see README §7.N "double-sampling" note.
+
+    Why ``stack_K = max_variates`` and not a sample from
+    ``variate_count_dist``?  ``LOTSAToIrregular`` already samples the
+    model-facing V from ``variate_count_dist`` capped at ``total_var``.
+    If we *also* sampled the stack size from the same distribution,
+    the cap would compound: model-seen V ≈ ``min(K1_dist, K2_dist)``,
+    which biases V low and underrepresents bucket 3 (V=9..16) — we
+    measured 35% vs target 55% in the smoke test.  Stacking
+    ``max_variates`` removes the upstream cap and lets the downstream
+    transform produce the requested V exactly.
+
+    Differences vs Moirai:
+      * Moirai uses ``beta_binomial(a=2, b=5, n=128)`` for K once;
+        the result enters ``ConcatDataset`` directly.  Our pipeline
+        always reduces to the model's ``max_dim=20`` *after* stacking,
+        so we use a fixed ``stack_K = max_variates`` (== 20 by default)
+        instead.  The downstream transform's bucketed
+        ``variate_count_dist`` is the equivalent of Moirai's
+        ``beta_binomial`` re-sampling.
+      * Moirai's recipe assumes "same start and end dates" across
+        stacked series.  Our normalization is per-(b,v), so series
+        with different absolute calendar starts still produce a
+        coherent multivariate sample after we project to
+        ``timestamps ∈ [0, 1]`` per-record in the collator.  Truncating
+        to ``min(T_i)`` ensures all stacked series have the same length
+        without padding.
+
+    Output schema is identical to ``LOTSAHFSource``, so this is a
+    drop-in replacement.
+    """
+
+    variate_count_dist: tuple = _DEFAULT_VARIATE_COUNT_DIST  # kept for API parity
+    max_variates: int = 20
+    # Internal: True/False/None (None until first peek, then memoized).
+    _natively_multivariate: Any = field(default=None, init=False, repr=False)
+
+    def _check_natively_multivariate(self) -> bool:
+        """Inspect a few records to decide whether stacking applies.
+
+        Cached: only run on first ``__iter__`` call.  Memoized as
+        ``self._natively_multivariate``.
+        """
+        if self._natively_multivariate is not None:
+            return self._natively_multivariate
+        # Peek up to 5 records.  All-or-nothing for these LOTSA datasets,
+        # but we check a few to be defensive against single-record
+        # anomalies.
+        n_to_check = min(5, self._len)
+        is_mv = False
+        for _ in range(n_to_check):
+            i = int(self._rng.integers(0, self._len))
+            try:
+                ex = self._indexer.getitem(i)
+            except Exception:
+                continue
+            target = ex.get("target")
+            if target is None:
+                continue
+            if target.ndim == 2 and target.shape[0] > 1:
+                is_mv = True
+                break
+        self._natively_multivariate = bool(is_mv)
+        return is_mv
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        if self._len == 0:
+            return
+
+        # Decide once per worker whether this source is natively MV.
+        if self._check_natively_multivariate():
+            # Pass through using the parent's iterator.
+            yield from super().__iter__()
+            return
+
+        # Univariate-on-disk: stack max_variates random series per item.
+        # The downstream transform's _sample_n_var picks the actual
+        # model-facing V from variate_count_dist (no double-sampling).
+        while True:
+            n_avail = self._len
+            K = max(1, min(self.max_variates, n_avail))
+            indices = self._rng.choice(n_avail, size=K, replace=(K > n_avail))
+            tracks: list[np.ndarray] = []
+            freq_seen: Optional[str] = None
+            ids_seen: list[str] = []
+            for j in indices:
+                try:
+                    ex = self._indexer.getitem(int(j))
+                except Exception:
+                    continue
+                t = ex.get("target")
+                if t is None or t.size == 0:
+                    continue
+                arr = t.flatten() if t.ndim == 2 else t
+                if arr.size < 2:
+                    continue
+                if arr.dtype != np.float32:
+                    arr = arr.astype(np.float32, copy=False)
+                tracks.append(arr)
+                if freq_seen is None:
+                    freq_seen = str(ex.get("freq", "H"))
+                ids_seen.append(str(ex.get("item_id", int(j))))
+            if not tracks:
+                continue
+            min_T = min(t.size for t in tracks)
+            if min_T < 2:
+                continue
+            stacked = np.stack([t[:min_T] for t in tracks], axis=0)
+            # Replace NaN with 0 (downstream LOTSAToIrregular also does
+            # this; doing it here avoids a copy later).
+            if not np.all(np.isfinite(stacked)):
+                stacked = np.where(np.isfinite(stacked), stacked, 0.0).astype(
+                    np.float32, copy=False
+                )
+            yield {
+                "target": stacked,
+                "freq": freq_seen or "H",
+                "item_id": "stk_" + "_".join(ids_seen[:3])
+                + (f"+{len(ids_seen) - 3}" if len(ids_seen) > 3 else ""),
+                "source_name": self.name,
+            }
+
+
+# ---------------------------------------------------------------------------
 # Synthetic Arrow IPC sources
 # ---------------------------------------------------------------------------
 
@@ -447,17 +661,65 @@ class KernelSynthSource(IterableSource):
 # Convenience: build a list of LOTSAHFSource from a directory listing
 # ---------------------------------------------------------------------------
 
+# Sentinel: pass this to ``discover_lotsa_sources(stacking_datasets=...)``
+# to enable stacking on every dataset (auto-detect at runtime via
+# ``StackedLOTSASource._check_natively_multivariate``).
+STACK_ALL: object = object()
+
+
 def discover_lotsa_sources(
     root: str,
     include: Optional[Sequence[str]] = None,
     exclude: Optional[Sequence[str]] = None,
     seed: int = 0,
+    stacking_datasets: Optional[Any] = STACK_ALL,
+    variate_count_dist: Optional[tuple] = None,
+    max_variates: int = 20,
 ) -> list[LOTSAHFSource]:
     """Discover LOTSA datasets under ``root`` and wrap each in a source.
 
     Each subdirectory of ``root`` containing a ``dataset_info.json`` is
     treated as one HF dataset. ``include``/``exclude`` filter by name.
+
+    Stacking policy (``stacking_datasets``):
+
+    * :data:`STACK_ALL` (default): every dataset is wrapped in
+      :class:`StackedLOTSASource`.  Stacking only fires for datasets
+      that are univariate-on-disk; natively-multivariate datasets are
+      passed through unchanged via the
+      ``_check_natively_multivariate`` short-circuit.  This is more
+      aggressive than Moirai (whose curated list misses many univariate
+      LOTSA datasets like ``alibaba_cluster_trace_2018``,
+      ``favorita_sales``, etc.).  It directly fixes the V=1 over-
+      representation we observed in the smoke test (see README §7.N).
+    * Sequence of names: only those datasets are wrapped; others use
+      plain :class:`LOTSAHFSource`.  Pass
+      :data:`MOIRAI_STACKING_DATASETS` to reproduce Moirai's exact
+      behavior.
+    * ``None`` or empty sequence: stacking disabled entirely.
+
+    Args:
+        root: LOTSA root directory.
+        include / exclude: dataset name filters.
+        seed: base seed for per-source RNGs.
+        stacking_datasets: see policy above.
+        variate_count_dist: P[V] bucketing for stacked sources.
+            Defaults to the same distribution as ``task_sampler.py``.
+        max_variates: hard cap on stacked V (matches ``collate.max_dim``).
     """
+    if variate_count_dist is None:
+        variate_count_dist = _DEFAULT_VARIATE_COUNT_DIST
+
+    if stacking_datasets is STACK_ALL:
+        stack_all = True
+        stacking_set: set[str] = set()
+    elif stacking_datasets is None or len(stacking_datasets) == 0:
+        stack_all = False
+        stacking_set = set()
+    else:
+        stack_all = False
+        stacking_set = set(stacking_datasets)
+
     out: list[LOTSAHFSource] = []
     for entry in sorted(os.listdir(root)):
         sub = os.path.join(root, entry)
@@ -470,7 +732,18 @@ def discover_lotsa_sources(
         if exclude is not None and entry in exclude:
             continue
         try:
-            out.append(LOTSAHFSource(path=sub, name=f"lotsa:{entry}", seed=seed))
+            if stack_all or entry in stacking_set:
+                out.append(
+                    StackedLOTSASource(
+                        path=sub,
+                        name=f"lotsa:{entry}",
+                        seed=seed,
+                        variate_count_dist=tuple(variate_count_dist),
+                        max_variates=max_variates,
+                    )
+                )
+            else:
+                out.append(LOTSAHFSource(path=sub, name=f"lotsa:{entry}", seed=seed))
         except Exception as e:
             print(f"[discover_lotsa_sources] skipping {entry}: {e}")
     return out

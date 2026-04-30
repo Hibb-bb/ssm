@@ -172,8 +172,15 @@ def cotemporaneous_mix(
 ) -> np.ndarray:
     """Instantaneous mixing: Y_t = f(W @ X_t) + noise.
 
-    Each output variate can get a different pointwise nonlinearity.
-    A fraction of W entries are zeroed to produce sparse dependency graphs.
+    Each output variate can get a different pointwise nonlinearity from
+    {id, tanh, sin}. A fraction of W entries are zeroed to produce sparse
+    dependency graphs. We deliberately exclude the previously-included
+    "sq" nonlinearity (`sign(x) * min(x^2 * 0.1, 1e4)`) because base
+    series with ETS/TSI trend reach |x| > 316 routinely, at which point
+    the clip activates and the variate becomes a flat rail at +-1e4 for
+    the rest of the window — useless as a forecasting target. The
+    Chronos-2 paper (Ansari et al. 2025, sec 4.2) does not specify any
+    nonlinearity list; this is our choice.
     """
     _, n_base = base.shape
     W = rng.normal(0.0, 1.0, size=(n_base, n_out))
@@ -184,11 +191,9 @@ def cotemporaneous_mix(
     Y = base @ W
 
     for j in range(n_out):
-        nl = rng.choice(["id", "tanh", "sq", "sin"])
+        nl = rng.choice(["id", "tanh", "sin"])
         if nl == "tanh":
             Y[:, j] = np.tanh(Y[:, j])
-        elif nl == "sq":
-            Y[:, j] = np.sign(Y[:, j]) * np.minimum(Y[:, j] ** 2 * 0.1, 1e4)
         elif nl == "sin":
             Y[:, j] = np.sin(Y[:, j])
 

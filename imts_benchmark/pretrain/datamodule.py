@@ -36,6 +36,8 @@ from .mixed_dataset import (
     make_logical_source,
 )
 from .sources import (
+    MOIRAI_STACKING_DATASETS,
+    STACK_ALL,
     ChronosSynthSource,
     KernelSynthSource,
     LOTSAHFSource,
@@ -116,8 +118,35 @@ def build_logical_sources(
         include = sources_cfg.get("lotsa_include")
         exclude = sources_cfg.get("lotsa_exclude")
 
+        # Moirai-style univariate→multivariate stacking (§7.N).
+        # Default: STACK_ALL — wrap every LOTSA dataset; stacking only
+        # fires for univariate-on-disk datasets, natively-MV passes
+        # through.  Override via ``sources.yaml::lotsa_stacking_datasets``:
+        #   - "moirai_only": use Moirai's exact curated list
+        #   - "all": same as default
+        #   - "none" / [] / null: disable stacking entirely
+        #   - list of names: stack only those
+        ls_cfg = sources_cfg.get("lotsa_stacking_datasets", "all")
+        if ls_cfg == "all":
+            stacking_datasets = STACK_ALL
+        elif ls_cfg == "moirai_only":
+            stacking_datasets = MOIRAI_STACKING_DATASETS
+        elif ls_cfg in (None, "none", "off", "disabled", []):
+            stacking_datasets = ()
+        else:
+            stacking_datasets = ls_cfg
+        # Borrow the bucketed P[V] from the stage config so the
+        # stacking distribution stays in sync with task_sampler.
+        v_dist = tuple(stage.variate_count_dist) if stage.variate_count_dist else None
+
         physical = discover_lotsa_sources(
-            lotsa_root, include=include, exclude=exclude, seed=seed
+            lotsa_root,
+            include=include,
+            exclude=exclude,
+            seed=seed,
+            stacking_datasets=stacking_datasets,
+            variate_count_dist=v_dist,
+            max_variates=stage.max_variates,
         )
         if physical:
             # lotsa_regular: clean data only, no degradation

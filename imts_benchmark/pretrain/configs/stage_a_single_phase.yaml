@@ -1,0 +1,62 @@
+# Stage A — single-phase, no curriculum.
+#
+# Source mix per user spec (2026-04-29):
+#   30% synthetic + 70% degraded LOTSA, with the same regime distribution
+#   applied to all sources.  No separate `lotsa_regular` source — the
+#   30% regular regime within `lotsa_degraded` already provides clean
+#   real-data exposure.
+#
+# Dropping curriculum is supported by the val→test analysis on
+# aligned_a_constlr: 6 of 8 IMM-TSF datasets picked phase-1 ckpts; only
+# EPA-Air and GDELT preferred phase-2.  The phase shift was costing
+# more than it gained.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 384
+  max_variates: 20
+  # IMM-TSF Table 1 alignment + Moirai-style stacking of univariate
+  # LOTSA datasets (§7.N).  Bucket 3 (V=9..16) covers 5 of 8 IMM-TSF
+  # eval sets; bucket 1 (V=1) is intentionally small because most
+  # univariate LOTSA gets stacked up via MultiSampleTimeSeriesDataset.
+  variate_count_dist:    [0.05, 0.35, 0.55, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.05, 0.95, 0.0]                # all-target only
+  regime_dist:     [0.30, 0.10, 0.40, 0.20]         # mixed-heavy single regime
+  min_ctx_obs_per_target: 8
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+# H2 (2026-04-30): stacking off, mix back to 30/70.
+#
+# Three runs (30/70, 50/50, 10/90) all hit the same ~0.965 mse_z_imm_avg
+# ceiling at ~step 16K.  Mixture proportion does NOT matter.
+# H2 tests whether random-stacked univariate LOTSA (`STACK_ALL`) is
+# teaching the model a "treat variates as independent" wrong prior,
+# blocking IMM-TSF transfer.  Disable stacking via
+# sources.yaml::lotsa_stacking_datasets='none', keep mix at 30/70 (the
+# best-performing ratio).
+mix:
+  chronos2_synth: 0.20
+  kernelsynth:    0.10
+  lotsa_degraded: 0.70
+
+# Per-source overrides — apply the SAME regime_dist to every source so
+# the global irregularity distribution actually matches what `stage`
+# specifies.  All sources also share task_type_probs=[0.05, 0.95, 0.0].
+overrides:
+  chronos2_synth:
+    regime_dist: [0.30, 0.10, 0.40, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+  kernelsynth:
+    regime_dist: [0.30, 0.10, 0.40, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+  lotsa_degraded:
+    regime_dist: [0.30, 0.10, 0.40, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+    # IMM-TSF eval format: degrade context AND future, predict only at
+    # observations that survived (no clean-future supervision).
+    clean_target_mode: false

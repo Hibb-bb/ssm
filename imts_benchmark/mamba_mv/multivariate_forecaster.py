@@ -73,6 +73,7 @@ class MultivariateMambaForecaster(pl.LightningModule):
         # "huber" via the train script.
         loss_type: str = "mse",
         huber_delta: float = 1.0,
+        lr_schedule: str = "cosine",
     ):
         super().__init__()
         # Resolve effective variate-table size before save_hyperparameters
@@ -139,6 +140,25 @@ class MultivariateMambaForecaster(pl.LightningModule):
         masked[pred_region] = 0.0
         return masked, pred_region & valid_mask
 
+    def _build_var_id(self, B: int, V: int, *, device) -> torch.Tensor:
+        """Per-batch-element variate IDs for any-variate attention bias.
+
+        Shape ``[B, V]``.  Each batch element is one window with V *distinct*
+        variates (we never pack multiple series into one batch element), so
+        slot indices ``arange(V)`` are unique within an element.  Under this
+        choice the binary same/different bias reduces to a learned self-vs-other
+        bias on the V x V attention matrix at each grid step — a simple but
+        useful inductive prior, equivalent to a learned diagonal vs off-diagonal
+        offset per head.  See Moirai-1 §3.2 for the general protocol; in their
+        case multiple packed series motivate per-series random IDs, which does
+        not apply here.
+        """
+        return (
+            torch.arange(V, device=device, dtype=torch.long)
+            .unsqueeze(0)
+            .expand(B, V)
+        )
+
     def forward(self, batch):
         values = batch["values"]           # [B, V, L]
         timestamps = batch["timestamps"]   # [B, V, L]
@@ -156,11 +176,13 @@ class MultivariateMambaForecaster(pl.LightningModule):
         avail = grid_out["avail"]
         rho = grid_out["rho"]
 
+        B, V, L = values.shape
+        var_id = self._build_var_id(B, V, device=values.device)        # [B, V]
+
         for attn, mamba in zip(self.fusion_attn, self.fusion_mamba):
-            H = attn(H, avail, rho)
+            H = attn(H, avail, rho, var_id=var_id)
             H = mamba(H)
 
-        B, V, L = values.shape
         query_times = timestamps.reshape(B, V * L)                    # [B, VL]
         query_variate = (
             torch.arange(V, device=values.device)
@@ -252,13 +274,38 @@ class MultivariateMambaForecaster(pl.LightningModule):
 
         ``val/mae_*`` mirrors the same split.
         """
+        # The model is trained on asinh-z inputs (see collate.py +
+        # val_imts.py), so its outputs live in asinh-z space.  We invert
+        # with ``sinh`` to recover raw z, then denormalize for original
+        # units.  The (mu, std) carried in batch are the *raw-z* mu/std,
+        # i.e. (orig - mu) / std = raw_z.
+        #
+        # IMM-TSF paper-comparable metric requires raw z-MSE, NOT
+        # asinh-z-MSE, so we always compare in raw z and orig units.
+        # See README §3.5 + §Q4 for derivation.
+        #
+        # Bounded inversion: sinh grows exponentially.  Across the eight
+        # IMM-TSF val sets the true |asinh-z| target tops out at 4.05
+        # (FNSPID) and is below 3.5 for everything else.  An untrained or
+        # off-distribution model can occasionally emit asinh-z=20-30 for
+        # a single timestep on a single sample, which sinh() inflates to
+        # 1e8-1e13 and dominates the average MSE (we observed inf at
+        # step 44K of single_phase, see README §7.K).  Clamping
+        # preds_asinh to ±10 keeps the worst sample-level z-error at
+        # sinh(10)≈1.1e4 — bad numerically but no longer "infinity",
+        # so EarlyStopping/ckpt-selection still works.  This does NOT
+        # change training behavior, only the eval metric robustness.
         with torch.no_grad():
-            preds_z = self.forward(batch)            # [B, V, L]
+            preds_asinh = self.forward(batch)        # [B, V, L]  asinh-z space
+            preds_asinh = preds_asinh.clamp(-10.0, 10.0)
+        preds_z = torch.sinh(preds_asinh)            # raw z
         mu = batch["value_mu"].to(preds_z.dtype)     # [B, V]
         std = batch["value_std"].to(preds_z.dtype)   # [B, V]
-        truth_z = batch["values"].to(preds_z.dtype)
+        truth_orig = batch["values_orig"].to(preds_z.dtype)
+        # Recompute raw-z truth from orig + (mu, std) — more numerically
+        # stable than sinh(batch["values"]) which round-trips through asinh.
+        truth_z = (truth_orig - mu.unsqueeze(-1)) / std.unsqueeze(-1).clamp_min(1e-12)
         preds_orig = preds_z * std.unsqueeze(-1) + mu.unsqueeze(-1)
-        truth_orig = batch["values_orig"].to(preds_orig.dtype)
         pm = batch["pred_mask"]
         if pm.sum() == 0:
             return
@@ -279,10 +326,15 @@ class MultivariateMambaForecaster(pl.LightningModule):
         # health during training; not paper-comparable for IMM-TSF.
         self.log(f"val/mse_{ds}", mse, batch_size=bs, prog_bar=True, add_dataloader_idx=False)
         self.log(f"val/mae_{ds}", mae, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
-        # z-scored metrics: paper-comparable for IMM-TSF
-        # (parse_datasets.py:103-111 + evaluation.py:27-30).
-        self.log(f"val/mse_z_{ds}", mse_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
-        self.log(f"val/mae_z_{ds}", mae_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
+        # z-scored metrics: only for IMM-TSF (where it's paper-comparable
+        # via parse_datasets.py:103-111 + evaluation.py:27-30).
+        # Activity/USHCN have known fixed scales and the published baselines
+        # report original-unit MSE, so per-sample z is uninformative there
+        # (and historically inflates to 1e10 because per-(b,v) std collapses
+        # for near-constant series — see README §Q4).
+        if ds.startswith("imm_"):
+            self.log(f"val/mse_z_{ds}", mse_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
+            self.log(f"val/mae_z_{ds}", mae_z, batch_size=bs, prog_bar=False, add_dataloader_idx=False)
 
     def test_step(self, batch, batch_idx):
         values = batch["values"]
@@ -438,12 +490,36 @@ class MultivariateMambaForecaster(pl.LightningModule):
             lr=self.hparams.lr,
         )
 
+        # ``lr_schedule`` controls the post-warmup behavior:
+        #   "cosine"    : decay 1.0 -> 0.0 over (num_training_steps - num_warmup_steps).
+        #                 Default; matches the original imts_benchmark behavior.
+        #   "constant"  : stay at peak LR for the entire post-warmup span.
+        #   "multistep" : DeepSeek-LLM (Bi et al., 2024, §3.3) recipe.  Stay at
+        #                 peak LR until 80% of training, drop to 31.6% (= √0.1)
+        #                 of peak for next 10%, then drop to 10% of peak for the
+        #                 last 10%.  Designed for continuation-training: the
+        #                 first 80% is constant LR, so extending a run by
+        #                 raising num_training_steps lets the constant phase
+        #                 grow without replaying earlier steps.
+        schedule_name = getattr(self.hparams, "lr_schedule", "cosine")
+
         def lr_lambda(step):
-            if step < self.hparams.num_warmup_steps:
-                return step / max(1, self.hparams.num_warmup_steps)
-            progress = (step - self.hparams.num_warmup_steps) / max(
-                1, self.hparams.num_training_steps - self.hparams.num_warmup_steps
-            )
+            warmup = self.hparams.num_warmup_steps
+            total = self.hparams.num_training_steps
+            if step < warmup:
+                return step / max(1, warmup)
+            if schedule_name == "constant":
+                return 1.0
+            if schedule_name == "multistep":
+                # DeepSeek-LLM 80/90 schedule
+                if step < 0.8 * total:
+                    return 1.0
+                elif step < 0.9 * total:
+                    return 0.316  # √0.1
+                else:
+                    return 0.10
+            # cosine (default)
+            progress = (step - warmup) / max(1, total - warmup)
             return 0.5 * (1.0 + math.cos(math.pi * progress))
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
@@ -512,13 +588,15 @@ class MultivariateMambaSandwichForecaster(MultivariateMambaForecaster):
         avail = grid_out["avail"]
         rho = grid_out["rho"]
 
+        B, V, L = values.shape
+        var_id = self._build_var_id(B, V, device=values.device)        # [B, V]
+
         for attn, mamba in zip(self.fusion_attn, self.fusion_mamba):
-            H = attn(H, avail, rho)
+            H = attn(H, avail, rho, var_id=var_id)
             H = mamba(H)
         for m in self.tail_grid_mamba:
             H = m(H)
 
-        B, V, L = values.shape
         query_times = timestamps.reshape(B, V * L)
         query_variate = (
             torch.arange(V, device=values.device)

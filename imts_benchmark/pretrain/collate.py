@@ -79,6 +79,7 @@ def make_collate(
     randomize_slots: bool = True,
     standardize_per_var: bool = True,
     min_std: float = 1e-3,
+    use_asinh: bool = True,
 ):
     """Return a collate fn closure for use in a PyTorch DataLoader."""
 
@@ -135,13 +136,36 @@ def make_collate(
             for v in range(V_act):
                 valid_padded[v, : n_obs_v[v]] = True
 
-            # Per-(b, v) standardization, context-only.
-            # NOTE: stats are computed in float64 to avoid
+            # Per-(b, v) standardization, context-only, then optional
+            # asinh squashing (Chronos-2 §3.1 "robust scaling").
+            #
+            # NOTE 1: stats are computed in float64 to avoid
             # ``RuntimeWarning: overflow encountered in square`` when raw
             # LOTSA values are large enough that ``(x - mu) ** 2`` saturates
             # the float32 range during ``.std()``.  See README §7.D.6.
+            #
+            # NOTE 2: when ``use_asinh=True`` (default), we apply
+            #     z_tilde = arcsinh((x - mu) / max(std, 1e-6))
+            # so that near-constant context (USHCN-style precipitation)
+            # which would z-score future values into the thousands gets
+            # tamed to ~9 (asinh(5000) ≈ 9.21).  This eliminates the
+            # train-loss explosions logged in README §Q4 and is the same
+            # robust-scaling step Chronos-2 uses.  The ``min_std`` floor
+            # drops to 1e-6 since asinh handles whatever blowup remains.
+            # When ``use_asinh=False``, fall back to plain z-scoring with
+            # the old ``min_std=1e-3`` floor.
+            #
+            # 2026-04-29: bumped min_std back from 1e-6 to 1e-3 (F2 fix,
+            # README §7.O).  The asinh trick handles loss-side stability
+            # but the pre-asinh z-score still produced |a|=20 outliers
+            # for heavy-tailed lotsa series with σ < 1e-3 (1 spike per
+            # 300 obs at original-units value ~3e8 stds away from the
+            # bulk mean).  Bumping the floor caps these at |a|≈9 without
+            # losing any data.  No measurable effect on training loss
+            # but reduces wasted gradient capacity on outlier targets.
             if standardize_per_var:
                 hist_b = float(s["history"])
+                std_floor = min_std if use_asinh else 1e-3
                 for v in range(V_act):
                     ctx = valid_padded[v] & (ts_padded[v] < hist_b)
                     if ctx.sum() >= 3:
@@ -154,8 +178,11 @@ def make_collate(
                         std = float(x64.std())
                     else:
                         mu, std = 0.0, 1.0
-                    std = max(std, min_std)
-                    vals_padded[v] = (vals_padded[v] - mu) / std
+                    std = max(std, std_floor)
+                    z = (vals_padded[v] - mu) / std
+                    if use_asinh:
+                        z = np.arcsinh(z).astype(np.float32)
+                    vals_padded[v] = z.astype(np.float32)
                     vals_padded[v] = np.where(valid_padded[v], vals_padded[v], 0.0)
 
             # Scatter active variates into their (possibly randomized) slots.

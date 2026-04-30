@@ -9,8 +9,14 @@ the open questions we still need to resolve.
 
 If you change a knob, **also update this file**.
 
-> Status: 2026-04-26.  Pre-launch design review; no large pretraining run has
-> been launched yet.  Blocking concerns marked **OPEN** below need your call.
+> Status: 2026-04-29.  Single-phase Stage A (`single_phase`) run completed
+> early (step 44K / 80K) due to a bounded eval blow-up on GDELT/ClusterTrace.
+> See **§7.K** for results, **§7.L** for the eval fix, **§7.M** for the
+> LOTSA stall root cause (89% of LOTSA weight is on 2 univariate datasets),
+> and **§7.N** for the Moirai-style sampling fix landed today (solar/wind
+> 89% → 2.3% of mass; V=9..16 model-seen 9% → 41.6%; cosine 30K LR replaces
+> multistep 80K).  Next launch: `single_moirai_v2_synth30_lotsa70_regimeMix40_d384_cosine30000_warmup500_s42`,
+> awaiting user approval.
 
 ------------------------------------------------------------------------
 
@@ -1157,6 +1163,838 @@ within the same stage**.  Mixing both is rejected at parse time.
 
 ------------------------------------------------------------------------
 
+### 7.I  Results — Stage A (synth-only) and Stage B (mixed) on the original architecture
+
+**Stage A — `axis4_synth_only`** (50K steps, ~3.5 h, 1×H100):
+
+- Run dir: `runs/axis4/axis4_synth_only/`
+- Init: from scratch.  Mix: 70 % `chronos2_synth` + 30 % `kernelsynth_irregular`.
+- Best `val/mse_z_imm_avg = 1.2722` at **step 15K**, then drifts up — clear overfitting on synthetic-only.
+- Best ckpt promoted to Stage B: `best-step00015000-mse1.2722.ckpt`.
+- W&B: https://wandb.ai/magicslabnorthwestern/TSKing/runs/8mcds09x
+
+**Stage B — `stageB_chronos35_kernel20_lotsaDeg30_lotsaReg15_d384_huber_200k_fromA-15K_s42`**
+(200K steps, ~16 h, 1×H100):
+
+- Init: `--init_from runs/axis4/axis4_synth_only/best-step00015000-mse1.2722.ckpt` (weights only; fresh optimizer / scheduler / RNG).
+- Mix: 35 % chronos2 + 20 % kernelsynth + 30 % degraded LOTSA + 15 % regular LOTSA.
+- 80 val cycles total (every 2.5 K steps), full 10-dataset val set each cycle.
+- `transition.json` records full provenance (source ckpt, source step, source ablation config).
+
+Stage B Z-MSE trajectory (selected steps):
+
+| step    | imm_avg | activity | ushcn (raw) |
+| ------- | ------- | -------- | ----------- |
+| 2.5K    | 1.2441  | 0.0033   | 0.6249      |
+| 25K     | **1.1420** ← best | 0.0032 | 0.6253 |
+| 50K     | 1.3311  | 0.0032   | 0.6248      |
+| 100K    | 1.2471  | 0.0034   | 0.6242      |
+| 150K    | 1.2763  | 0.0033   | 0.6240      |
+| 200K    | 1.2677  | 0.0033   | 0.6243      |
+
+(USHCN raw `val/mse_ushcn` ≈ 0.62 throughout — the per-record
+z-scoring on USHCN's near-constant precipitation columns inflates
+its z-MSE to ~15 K, which is the §3.4 caveat 3 instability we
+flagged at design time.  We rely on `imm_avg` and the raw IMTS
+metrics for decision-making.)
+
+Per-IMM-dataset best step (final - best):
+
+| dataset       | best_step | best_mse_z | final_mse_z | Δ       |
+| ------------- | --------- | ---------- | ----------- | ------- |
+| CESNET        | 27.5K     | 1.0229     | 1.0561      | +0.0332 |
+| ClusterTrace  | 137.5K    | 0.9479     | 0.9920      | +0.0441 |
+| EPA-Air       | 77.5K     | 0.6870     | 0.9442      | +0.2572 |
+| FNSPID        | 100K      | 0.9240     | 1.3411      | +0.4172 |
+| GDELT         | 32.5K     | 1.2077     | 1.2247      | +0.0170 |
+| ILINet        | 25K       | 1.7944     | 2.5224      | +0.7279 |
+| RepoHealth    | 25K       | 1.0025     | 1.2195      | +0.2169 |
+| StudentLife   | 75K       | 0.8174     | 0.8419      | +0.0245 |
+
+**Stage A → Stage B delta on `mse_z_imm_avg`:** 1.2722 → 1.1420
+(−10.2 %).  The improvement comes early (within the first 25K
+Stage B steps) and then plateaus.  ILINet and FNSPID are the small
+datasets where overfitting is most pronounced past step 50K.
+
+**Best Stage B ckpt for downstream use** (under the original
+architecture; **see §7.J** for why the ckpt cannot be reused after the
+any-variate-attention switch):
+`runs/stage_b/stageB_chronos35_kernel20_lotsaDeg30_lotsaReg15_d384_huber_200k_fromA-15K_s42/best-step00025000-mse1.1420.ckpt`.
+
+**Implications.**
+1. The mixed-source curriculum **does** transfer signal from the
+   Stage-A weights into a stronger model — this validates the
+   Stage A → Stage B handoff design (`--init_from` + best-ckpt
+   promotion + `transition.json`).
+2. Both stages overfit relatively early.  At 50K Stage A and
+   25K Stage B, val IMM stops improving but train Huber keeps
+   dropping (e.g. final 0.34 at step 200K vs 1.10 at step 1K).
+   This argues for either (a) more data diversity (Stage C with
+   more LOTSA), (b) stronger regularization, (c) early stopping
+   integrated into the run, or (d) a fundamentally different
+   capacity / objective — see §7.J on the architecture switch
+   we are about to A/B for hypothesis (d).
+3. The `axis4_synth_lotsa` arm was never run; the synth-only arm
+   was sufficient evidence to commit to the synth-then-mixed
+   curriculum.
+
+------------------------------------------------------------------------
+
+### 7.J  Any-variate attention switch (collaborator change + bug fix)
+
+**Origin.**  Collaborator (Dawei) committed two architecture changes to
+branch `pretrain` (commits `28362ad`, `9c5bf7d`) on 2026-04-27,
+identifying two issues with the original design:
+
+1. **Per-slot variate embeddings don't generalize.**  The original
+   `nn.Embedding(n_vars, d_model)` indexed by `torch.arange(V)` binds
+   meaning to slot index.  Combined with our collator's per-batch slot
+   randomization (intentional, so the model treats variate IDs as
+   anonymous), this means each embedding row is being trained to
+   represent a *random average* over all variate types in all source
+   datasets.  At downstream time the slot-index embeddings carry no
+   meaningful signal.
+2. **Per-variate readout heads are similarly slot-keyed.**
+   `QueryReadout.head_weight: (n_vars, d_in, 1)` and per-variate decay
+   `gamma_raw: (n_vars, d_model)` learn slot-conditional scale/offset,
+   which is doubly redundant given (a) we already do per-(b,v) value
+   standardization in the collator and (b) slot indices are randomized.
+
+**Files touched (collaborator):**
+- `imts_benchmark/mamba_mv/variable_axis_attention.py`: removed
+  `variate_embed: nn.Embedding(n_vars, d_model)`, added Moirai-style
+  `_BinaryVariateAttentionBias(n_heads=H)` (a 2 × H learned tensor).
+- `imts_benchmark/mamba_mv/shared_grid.py`: removed
+  `variate_embed: nn.Embedding(n_vars, d_model//4)`; `proj` input width
+  shrinks from `d_h + d_m//4 + 1 + 2*n_freq` (497) to `d_h + 1 + 2*n_freq` (401).
+- `imts_benchmark/mamba_mv/query_readout.py`: replaced per-variate
+  `(head_weight, head_bias, gamma_raw)` with shared `nn.Linear(D+2*n_freq, 1)`
+  and shared `gamma_raw: (D,)`.
+
+**My independent assessment & two changes I applied on top.**
+
+*Direction:* +1.  Removing slot-keyed parameters is correct — they were
+fitting the slot-randomization noise, not signal.  Replacing with
+Moirai's any-variate bias (Woo et al., 2024, §3.2) is the right
+permutation-equivariant primitive.
+
+*Issue 1 (FIXED): the new attention bias was dead code.*
+The collaborator's `VariableAxisAttention.forward(...)` accepts an
+optional `var_id` argument, but the only call site
+(`MultivariateMambaForecaster.forward` at lines 159 and 515) **never
+passed it**.  Result: `var_id=None` always, `bias=None` always,
+`self.var_bias` allocated but never trained.  Fix:
+- Added `MultivariateMambaForecaster._build_var_id(B, V, device)`
+  returning `arange(V).expand(B, V)`.
+- Both forward call sites now pass `var_id=var_id` to `attn(...)`.
+- Verified by autograd: `fusion_attn.{0,1,2}.var_bias.weight.weight`
+  receives non-zero gradients on a smoke-tested forward+backward.
+
+Why `arange(V)` and not random IDs?  In Moirai they pack multiple
+series into one batch element, so per-series random IDs are needed
+for the bias to distinguish "same series" from "different series."
+We do not pack — each batch element is one window with V *distinct*
+variates — so slot indices are unique within the element by
+construction.  Under this choice the bias reduces to a learned
+self-vs-other bias (diagonal vs off-diagonal of the V x V attention
+matrix), which is a known-good inductive prior for a tiny parameter
+cost (`2 * n_heads = 8` params per fusion block).
+
+*Issue 2 (REVERTED): MQA was conflated with the variate-ID change.*
+The collaborator's diff also changed K/V projections from
+`d_model → d_model` to `d_model → d_model // n_heads`.  This is
+multi-query attention — a separate optimization aimed at autoregressive
+KV-cache memory.  Reasons to revert:
+- We attend over **V ≤ 20 tokens per slot**, so attention is already
+  `O(V²) ≈ 400` ops per slot — **trivial**; KV memory is not a
+  bottleneck.
+- We **don't decode autoregressively** along V, so the KV-cache
+  motivation doesn't apply.
+- **Moirai-1's any-variate attention itself uses standard MHA**, not
+  MQA.  The colleague's "match Moirai" framing actually argues
+  *against* MQA here.
+- MQA is less expressive — heads can no longer specialize their
+  key/value subspaces.  Combining "remove variate signal" + "compress
+  KV expressiveness" stacks two reductions in one diff, conflating
+  effects.
+
+Reverted in `variable_axis_attention.py`: K/V projections back to
+`d_model → d_model`, expand-from-1 hack removed.  If we want MQA
+later, ablate it in isolation against MHA on the same val set.
+
+*Issue 3 (open / minor): slot-keyed pieces still remain elsewhere.*
+- `SharedGridAligner.gamma_raw: (n_vars, d_hidden)` and `null_state:
+  (n_vars, d_hidden)` are still per-slot.  Same generalization argument
+  applies — these would benefit from the same any-variate treatment in
+  a follow-up pass.  Not a blocker for the upcoming run.
+- `n_vars` argument is now unused in `QueryReadout` and `SharedGridAligner`
+  (modulo the tables above).  Cosmetic cleanup nit.
+
+**Old checkpoint compatibility — verified incompatible.**
+The two best Stage A / Stage B ckpts under the original architecture
+**cannot be reused** under the new one:
+- 6 learned params have no destination
+  (`{fusion_attn.0,1,2}.variate_embed.weight`, `grid.variate_embed.weight`,
+  `readout.head_weight`, `readout.head_bias`).
+- 2 params have shape mismatch (`grid.proj.weight: (384, 497) → (384, 401)`,
+  `readout.gamma_raw: (20, 384) → (384,)`).
+- 7 new params would be randomly initialized (`var_bias` x 3, shared
+  `readout.head.{weight,bias}`, plus rebuilt buffers).
+
+So the new-arch run is necessarily from-scratch.  No `--init_from` is
+possible — the A/B genuinely starts from random weights.
+
+**A/B plan.**
+- Run `stageA_chronos70_kernel30_anyvariate_d384_huber_50k_s42` with
+  the same data, optimizer, val cadence, and seed as the original
+  `stageA_chronos70_kernel30_d384_huber_50k_s42`.
+- Headline metric: `val/mse_z_imm_avg` at the best step.  Original
+  baseline = **1.2722 @ step 15K**.
+- Tiebreaker: `val/mse_activity + val/mse_ushcn` at the same step.
+- Param count after the change: **7,760,297** (vs old arch ~7.84 M);
+  the small reduction is because we removed several per-variate tables
+  but added the tiny bias.  Step time and memory should be within
+  rounding noise of the original.
+
+**Status (2026-04-27, 21:46 UTC).**  Architecture changes landed
+locally on branch `pretrain` (`git_sha=9c5bf7d` for the colleague's
+diff; my `var_id` wiring + MQA revert are uncommitted at launch).
+Stage A any-variate run is **live** in `screen` session
+`anyvariate_stage_a`:
+
+- Out dir: `runs/anyvariate/stage_a_synth_only/`
+- W&B: https://wandb.ai/magicslabnorthwestern/TSKing/runs/09h7kbw1
+- Throughput: ~6.63 it/s (matches the original baseline of ~6 it/s)
+- ETA to step 50K: ~2.1 h
+- Reattach: `screen -r anyvariate_stage_a`
+- Hard kill: `screen -S anyvariate_stage_a -X quit`
+
+Launch script: `scripts/run_anyvariate_stage_a.sh`.  Same data, same
+hparams, same val cadence as the baseline `axis4_synth_only` run
+(`runs/axis4/axis4_synth_only/`); the only differences are the four
+architecture changes above (per-slot embeddings out, any-variate bias
+in + wired, MQA reverted, shared readout head).
+
+### 7.K  Single-phase Stage A (`single_phase`, 80K planned, ES at 44K)
+
+**Motivation.**  The two-phase curriculum (`aligned_a_constlr`) bought us
+0.97 → 0.97 on `val/mse_z_imm_avg` for ~3 h of compute — the easy→main
+phase shift was paying for itself only on EPA-Air and GDELT (2/8 of the
+IMM-TSF datasets); the other six picked phase-1 checkpoints in the
+honest val→test analysis.  We dropped the curriculum and ran a single
+**non-stationary** mix with the regime distribution applied uniformly
+to every source, plus a **multi-step LR schedule** (DeepSeek-LLM
+80/90 recipe) so the run can be extended later with no replay.
+
+**Config** (`configs/stage_a_single_phase.yaml`,
+`scripts/run_single_phase.sh`):
+
+```
+mix:                           regime_dist:                task_type_probs:
+  chronos2_synth: 0.20           regular: 0.30               univ:    0.05
+  kernelsynth:    0.10           sync:    0.10               all-tg:  0.95
+  lotsa_degraded: 0.70           mixed:   0.40               part-tg: 0.00
+                                 async:   0.20
+
+variate_count_dist:  [0.05, 0.40, 0.50, 0.05]   # IMM-TSF Table 1 alignment
+per_var_max_length:  384                         # was 256, fits ILINet/CESNET
+min_ctx_obs_per_target: 8                        # was 3, prevents starvation
+
+max_steps:        80000     warmup:     1000  schedule: multistep
+batch_size:           32    lr:         5e-4  precision: bf16-mixed
+gradient_clip_val:   1.0    early_stop_patience: 10
+synth_val_n_windows: 512    val_check_steps: 2000
+```
+
+`lotsa_degraded` carries `clean_target_mode=false` so the supervision
+matches IMM-TSF eval (degrade context AND future, predict only at
+surviving timestamps).  Despite the name "lotsa_degraded", the 30%
+regular regime within it produces *clean* LOTSA windows — net effective
+exposure: 21% clean LOTSA, 49% degraded LOTSA, 30% synth.
+
+**Outcome.**  Run died at step 44,000 / 80,000 (~2 h 47 m wall clock):
+
+| step | train/huber (median) | val/mse_z_imm_avg | val/synth_r2_overall |
+|---|---|---|---|
+| 2K  | 0.339 | 1.13 | 0.43 |
+| 18K | 0.297 | 1.01 | 0.50 |
+| **26K** | 0.298 | **0.967 (best)** | 0.50 |
+| 32K | 0.293 | 1.01 | 0.50 |
+| 40K | 0.284 | 1.17 | 0.50 |
+| 42K | — | 0.977 | 0.51 |
+| 44K | 0.337 | **inf** (GDELT, ClusterTrace blow-up → ES tripped) | 0.50 |
+
+Best ckpt: `best-step00026000-mse0.9671.ckpt`.  Improvement vs
+`aligned_a_constlr` baseline (0.97 → 0.967): essentially flat, but
+the curve was still descending right up to the blowup, so the
+underlying optimization was alive — see §7.L for why it crashed.
+
+**Per-IMM-TSF dataset best (cherry-picked along trajectory)**:
+
+| dataset      | best z-MSE | step  | dataset      | best z-MSE | step  |
+|--------------|------------|-------|--------------|------------|-------|
+| EPA-Air      | 0.44       | 36K   | CESNET       | 1.01       | 14K   |
+| FNSPID       | 0.23       | 20K   | StudentLife  | 0.82       | 42K   |
+| ClusterTrace | 0.84       | 32K   | RepoHealth   | 0.71       | 26K   |
+| GDELT        | 1.21       | 42K   | ILINet       | **2.05**   | 2K    |
+
+ILINet *regressed* from step 2K onwards.  Same regression pattern
+visible (less severely) on aligned_a_constlr.  Hypothesis: ILINet
+is V=12 weekly — the only 4-bucket dataset where our model hits
+hard cross-variate coupling.  See §7.M.
+
+**Synthetic in-distribution validation** is a fixed 512-window
+snapshot built once at fit-start with `seed = train_seed + 1000`,
+held in CPU RAM, run at every `val_check_steps`.  These windows are
+**never seen during training** (different seed → independent stream
+from the train dataloader).  Per-source pooled R² in raw-z space:
+
+| step | overall | chronos2 | kernelsynth | lotsa_degraded |
+|---|---|---|---|---|
+|  2K | 0.43 | 0.55 | 0.13 | 0.19 |
+| 18K | 0.50 | 0.65 | 0.13 | 0.21 |
+| 32K | 0.50 | 0.65 | 0.18 | 0.20 |
+| 42K | 0.51 | 0.65 | 0.18 | 0.21 |
+
+**Reading**: chronos2 is learnable (R² 0.65, the multivariate signal
+ceiling we set in the data); kernelsynth and LOTSA both stall around
+R² ≈ 0.20, but for very different reasons (see §7.M).
+
+### 7.L  Eval explosion in single_phase (asinh ↔ sinh blow-up)
+
+**Symptom.**  Step 44K eval produced `val/mse_z_imm_GDELT = inf` and
+`val/mse_z_imm_ClusterTrace = 2.7e+11`.  EarlyStopping was configured
+with `check_finite=True` so it terminated the run.
+
+**Root cause.**  `_log_imts_val` inverts model outputs from asinh-z
+back to raw-z with `torch.sinh(preds_asinh)`.  `sinh` is exponential:
+`sinh(10) ≈ 1.1e4`, `sinh(15) ≈ 1.6e6`, `sinh(20) ≈ 2.4e8`.  The model
+trains on bounded asinh-z targets — across the eight IMM-TSF
+datasets the true `|asinh-z|` target tops out at:
+
+| dataset      | max |asinh-z| target | sinh(that) |
+|--------------|----------------------|------------|
+| ILINet       | **2.01**             | 3.7        |
+| ClusterTrace | **2.26**             | 4.7        |
+| EPA-Air      | 3.09                 | 11.0       |
+| GDELT        | 3.48                 | 16.2       |
+| StudentLife  | 3.35                 | 14.2       |
+| CESNET       | 3.29                 | 13.3       |
+| RepoHealth   | 3.87                 | 24.0       |
+| FNSPID       | 4.05                 | 28.6       |
+
+If the model occasionally emits an asinh-z prediction outside its
+trained support — which can happen after a single bad gradient step
+or in a region of parameter space the optimizer drifts into — sinh
+exponentiates the error and the per-batch z-MSE explodes.  ILINet
+and ClusterTrace blew first because their target range is tightest.
+
+**Why didn't earlier runs hit `inf`?**  They came close but didn't
+quite reach it:
+
+| run | finite max val/mse_z_imm_avg |
+|---|---|
+| `curriculum/phase2_main` | **90,273** |
+| `aligned_a_constlr/phase2_main` | 15.99 |
+| `aligned_a/phase2_main` | 1.20 |
+| `single_phase` | inf (ES tripped at step 44K) |
+
+What's different about single_phase: (a) longest duration (44K vs
+≤16-30K), (b) constant-LR for the entire run (multistep doesn't
+decay until 80% of total = 64K, never reached), (c) no per-batch
+clipping of the model's *output* (we had `gradient_clip_val=1.0`
+which constrains the parameter step but not the activation).
+
+**Fix** (`mamba_mv/multivariate_forecaster.py::_log_imts_val`):
+
+```python
+with torch.no_grad():
+    preds_asinh = self.forward(batch)
+    preds_asinh = preds_asinh.clamp(-10.0, 10.0)   # bound sinh
+preds_z = torch.sinh(preds_asinh)
+```
+
+`±10` keeps the worst per-element z-error at `sinh(10) ≈ 1.1e4`,
+which is "bad" but no longer infinity, so EarlyStopping and
+checkpoint selection still see usable numbers.  This does NOT change
+training behavior — only eval metric robustness.
+
+Also dropped `mse_z` / `mae_z` logging for activity and USHCN: those
+have known fixed scales and the published baselines report
+original-unit MSE, so per-(b,v) z is uninformative there *and*
+historically inflates to 1e10 because of near-constant series
+(USHCN precipitation; see §Q4).  The aggregate callback also now
+filters non-finite values from the IMM-TSF mean, and ES uses
+`check_finite=False`, so a single transient blowup cannot terminate
+a run.
+
+### 7.M  LOTSA stalled — root cause: 89% of weight on 2 univariate datasets
+
+**Observation.**  Despite LOTSA being 70% of training, both the
+in-distribution synth val (`val/synth_lotsa_degraded_r2 ≈ 0.20`) and
+the IMM-TSF metrics show LOTSA-trained capacity is barely improving
+beyond step ~6K.
+
+**Diagnostic** (`scripts/diagnose_single_phase.py`).  We reconstructed
+the model from `best-step26000`, replayed a fresh in-distribution
+snapshot dataloader (2048 windows, seed = train_seed + 5000 ≠ train
++ 0 ≠ synth_val + 1000), and binned by source.  Per-source aggregates:
+
+| source | samples | active V (median, p10/p90) | ctx obs/var (median) | hor obs/var (median) | MSE (asinh-z) | R²    |
+|---|---|---|---|---|---|---|
+| chronos2_synth  |  404 |  3  (1 / 9)  | 132 | 44 | 0.61 | **0.51** |
+| kernelsynth     |  187 |  1  (1 / 6)  | 132 | 44 | 0.67 | 0.23 |
+| **lotsa_degraded** | **1457** | **1  (1 / 1)**  | 107 | 31 | 1.08 | 0.33 |
+
+Every single LOTSA window in the 2048-sample snapshot has **V = 1**.
+The variate-count distribution is supposed to be `[V=1: 5%, V=2-8:
+40%, V=9-16: 50%, V=17-20: 5%]`, but the active V depends on
+`min(total_var, max_variates)`, and `total_var` depends entirely on
+which physical LOTSA dataset got sampled.
+
+**Following the weights.**  The weight map comes from Moirai's
+`uni2ts/cli/conf/pretrain/data/lotsa_v1_weighted.yaml` (token-count
+weighting).  Top 10 of 170 LOTSA datasets:
+
+| rank | dataset                            |   weight  | % of total | V |
+|------|------------------------------------|----------:|-----------:|---|
+|  1   | solar_power                        | 33,835.57 | **44.98 %**| **1** |
+|  2   | wind_power                         | 33,835.22 | **44.98 %**| **1** |
+|  3   | australian_electricity_demand      |  1,055.32 | 1.40 %     | 1 |
+|  4   | residential_pv_power               |    543.18 | 0.72 %     | 3 |
+|  5   | residential_load_power             |    467.01 | 0.62 %     | 3 |
+|  6   | oikolab_weather                    |    457.67 | 0.61 %     | 1 |
+|  7   | LOOP_SEATTLE                       |    391.83 | 0.52 %     | (multi) |
+|  8   | wind_farms_with_missing            |    375.55 | 0.50 %     | 1 |
+|  9   | sunspot_with_missing               |    338.00 | 0.45 %     | 1 |
+| 10   | PEMS_BAY                           |    238.44 | 0.32 %     | (multi) |
+
+`solar_power` + `wind_power` together are **89.96 %** of LOTSA's
+sampling weight, both univariate.  Across all 170 datasets:
+
+- 78 / 170 datasets are multivariate (V ≥ 2): **45.9 %**.
+- Multivariate datasets carry 1,534 / 75,225 of the total weight: **2.0 %**.
+
+So with `lotsa_degraded` at 70% of training, ~98% of LOTSA samples are
+univariate → **63% of all training is univariate solar/wind**.  Only the
+30% synthetic share carries genuine multivariate structure.  This
+explains:
+
+- `val/synth_lotsa_degraded_r2` plateaus near 0.20: the LOTSA val
+  windows are also univariate, so we're scoring the model on a task
+  it does see in training, but it's a hard univariate task (irregular
+  electricity / weather / sunspot) without much for the multivariate
+  axis-attention to learn from.
+- ILINet (V=12 weekly) regressing from step 2K: the model never sees
+  a 12-variate window from LOTSA, only from the 30% synth share.
+  Once early synth-driven multivariate priors are overwritten by
+  univariate LOTSA mass, ILINet performance drifts down.
+- Original-units MSE on LOTSA-style sources looks fine (MAE 0.57)
+  because predicting the recent value or a smoothed mean gets you
+  most of the way for univariate solar/wind/sunspot.  R² is the
+  honest score (0.33) and it's gated by V=1.
+
+**Plots** (`runs/single_phase/.../diagnostics/`):
+
+- `single_phase_predictions_lotsa_degraded.png`: 6 LOTSA samples,
+  all V=1, model often predicts a near-constant baseline through
+  the future when the context is mostly noise.
+- `single_phase_predictions_chronos2_synth.png`: model correctly
+  extends smooth trends but flatlines through high-frequency
+  oscillation — consistent with predicting the conditional mean,
+  which is MSE-optimal for unpredictable detail but means the
+  visible predictions look "lazy".
+- `single_phase_predictions_kernelsynth.png`: same "predict the
+  mean" failure mode is more pronounced because kernelsynth often
+  has stronger high-frequency content.
+
+**Implications for the next run.**  Three fixes worth considering
+before relaunching:
+
+1.  **Cap `solar_power` and `wind_power` weights** — clip top-N
+    weights to e.g. 200, renormalize.  Brings effective LOTSA
+    multivariate share from 2 % → ~25 %.  This is the smallest
+    intervention.
+2.  **Stratified LOTSA sampling**: separate LOTSA into "univariate"
+    and "multivariate" pools, sample the pools at e.g. 50/50 instead
+    of weighted-flat.  Bigger lever.
+3.  **Synthetic multivariate from univariate LOTSA**: pick K
+    univariate series at random, treat them as a synthetic K-variate
+    record (this is essentially what Chronos-2's "covariate stacking"
+    does for cross-variate training data).  Highest leverage but
+    requires a new data path.
+
+We are *not* relaunching yet (per user instruction): fix
+`preds_asinh` clamp + drop activity/USHCN z-metrics now, then
+decide on the LOTSA fix path together.
+
+------------------------------------------------------------------------
+
+### 7.N  Moirai-style sampling fix (post-§7.M, pre-relaunch)
+
+Two surgical changes that bring our LOTSA sampling in line with
+Moirai's (Woo et al., 2024, §3.2) intent.  Triggered by the §7.M
+diagnosis.
+
+#### 7.N.1  Why our pre-fix code was wrong
+
+Moirai's published `lotsa_v1_weighted.yaml`
+(`uni2ts/cli/conf/pretrain/data/lotsa_v1_weighted.yaml`) lists
+*per-series multipliers*, not direct probabilities.  The numbers are
+precomputed so that
+
+\[
+  \text{num\_ts}_k \times \text{yaml\_weight}_k
+  \;=\; \omega_k
+  \;=\; \min\!\Big(\frac{\#\text{obs}_k}{\sum_j \#\text{obs}_j},\; \varepsilon\Big),
+  \qquad \varepsilon = 0.001
+\]
+
+Moirai's actual sampling probability is therefore
+\(p(D_k) \propto \omega_k\), and they realize it via
+`ConcatDataset` of `TimeSeriesDataset`s whose `__len__` equals
+`num_ts × dataset_weight`.  Sampling indices uniformly across the
+concat then *implicitly* weights each dataset by `num_ts × yaml_w`.
+
+Our `make_logical_source` was sampling proportional to `yaml_w`
+**only**, ignoring `num_ts`.  Two univariate datasets,
+`solar_power` and `wind_power`, each have `num_ts = 1` but
+`yaml_w ≈ 33,835`, so they each got ~45 % of LOTSA mass — the §7.M
+finding.  Multivariate datasets (`PEMS04`/`PEMS_BAY`/`LOOP_SEATTLE`/
+`subseasonal`/...) all sat below 1 %.
+
+Fix (`mixed_dataset.py::make_logical_source`):
+
+```python
+w = [_lookup_weight(s.name, weight_map) * max(1, len(s)) for s in physical_sources]
+```
+
+Effect (smoke test, 4 096 samples, `STACK_ALL` policy):
+
+| metric                                | pre-fix | post-fix |
+|---------------------------------------|--------:|---------:|
+| `solar_power + wind_power` mass       | 89.96 % | **2.27 %** |
+| top-1 dataset mass                    | 44.98 % | **4.25 %** |
+| #datasets with ≥ 1 % mass             |   ~6    | **~30**  |
+
+Top-N now: `LOOP_SEATTLE` 4.25, `Q-TRAFFIC` 4.25, `alibaba_cluster_trace_2018` 4.25,
+`azure_vm_traces_2017` 4.25, `borg_cluster_data_2011` 4.25, ...
+`solar_power` 1.14, `wind_power` 1.14.  Mass is now spread over 30+
+datasets including all the major multivariate ones.
+
+#### 7.N.2  Univariate→multivariate stacking
+
+Moirai's `MultiSampleTimeSeriesDataset` (paper §3.2:
+"constructing multivariate time series from sub-datasets with
+univariate time series, by randomly concatenating them") stacks
+`K` random univariate series from the same dataset into a
+`[K, T]` sample.  Without this step, ~half of LOTSA's diversity
+is locked behind univariate-on-disk datasets that the model only
+ever sees at V=1.
+
+We implemented this as `StackedLOTSASource` in `sources.py`.  Per
+iteration:
+
+1. Memoized peek determines if the underlying dataset is
+   univariate-on-disk or natively multivariate.
+2. Natively-MV: pass through unchanged via parent `__iter__`.
+3. Univariate-on-disk: stack
+   `K = min(max_variates, num_ts)` random series, truncated to
+   `min(T_i)` so all rows have the same length.  No padding.
+
+**Why `K = max_variates` and not sampled from `variate_count_dist`?**
+We measured a "double-sampling cap" bug in the smoke test: if both
+the source and the downstream `LOTSAToIrregular._sample_n_var`
+draw from `variate_count_dist`, the model-seen V follows
+`min(K_source, K_transform)`, which biases V low.  Concretely,
+sampling K_source from the dist gave bucket `V=9..16` only 35 %
+mass vs target 55 %.  Stacking `max_variates` always lets the
+downstream transform produce the requested V exactly.
+
+Wiring (`datamodule.py::build_logical_sources`):
+the default policy is `STACK_ALL` — every LOTSA dataset is wrapped
+in `StackedLOTSASource`; stacking only fires for univariate-on-disk
+ones.  Override via `sources.yaml::lotsa_stacking_datasets`:
+- `"all"` (default): wrap every dataset
+- `"moirai_only"`: use Moirai's curated list (~22 datasets), more
+  conservative
+- `"none"` / `[]` / `null`: disable stacking
+- list of names: stack only those
+
+Empirical V distribution (smoke test, post-transform, model-seen,
+N = 2 048 samples, `STACK_ALL`):
+
+| bucket      | target | pre-fix (single_phase) | post-fix |
+|-------------|-------:|----------------------:|--------:|
+| V = 1       |  5 %   | ~63 %                 | **7.9 %**  |
+| V = 2..8    | 35 %   | ~25 %                 | **47.0 %** |
+| V = 9..16   | 55 %   |  ~9 %                 | **41.6 %** |
+| V = 17..20  |  5 %   |  ~3 %                 | **3.4 %**  |
+
+Bucket 3 (V=9..16) — where 5 of 8 IMM-TSF eval datasets live — went
+from ~9 % of training time to 41.6 %.  The remaining gap to the 55 %
+target comes from natively-MV LOTSA datasets with V < 20
+(`subseasonal` V=4, etc.) which force `_sample_n_var` to its cap;
+fixing that would require stacking *across* multivariate datasets,
+which we leave for a future iteration.
+
+#### 7.N.3  `variate_count_dist` re-tuned for IMM-TSF
+
+Updated default in `task_sampler.py::StageSpec` and the single-phase
+config:
+
+|                | pre-fix              | post-fix              |
+|----------------|----------------------|------------------------|
+| `variate_count_dist` | [0.10, 0.60, 0.25, 0.05] | **[0.05, 0.35, 0.55, 0.05]** |
+
+The rationale is empirical: the IMM-TSF Table-1 V counts are
+`{V=4..16, V=10, V=10, V=11, V=11, V=10, V=11, V=9}` — i.e. 7 of 8
+datasets sit at V=9..11 (RepoHealth=10, CESNET=10, ILINet=11,
+ClusterTrace=11, StudentLife=9, EPA-Air=4..16, FNSPID=10,
+GDELT=10).  Concentrating mass in bucket 3 trains directly on the
+regime where evaluation happens.  Bucket 1 is now small because
+`StackedLOTSASource` ensures we rarely actually emit V=1 samples.
+
+#### 7.N.4  Synthetic sources unchanged
+
+`ChronosSynthSource` and `KernelSynthSource` already produce
+multivariate samples whose V varies per record (chronos2 median V=3,
+p90=9; kernelsynth user-controlled).  They feed into the same
+`LOTSAToIrregular` transform, so the new `variate_count_dist` already
+applies to them via `_sample_n_var`.  No code change there.
+
+#### 7.N.5  LR schedule: cosine 30 K (replacing multistep 80 K)
+
+Per §Q2 / §7.K: the multistep schedule never actually decayed before
+ES tripped at 44 K / 80 K.  The replacement is
+
+```
+warmup = 500 steps; peak LR = 5e-4; cosine to 0 over 30 K total steps
+```
+
+Rationale: validation loss in `single_phase` plateaued from step
+~6 K (data-limited, not optimization-limited).  30 K total = ~2.25 h
+on 1×H100 at our throughput.
+
+#### 7.N.6  What we did NOT port from Moirai
+
+For honesty, the deltas vs Moirai's pretraining:
+
+| feature                             | Moirai                | us                              |
+|-------------------------------------|-----------------------|----------------------------------|
+| dataset weighting                   | `num_ts × yaml_w`     | **same** (§7.N.1)               |
+| univariate→MV stacking              | curated 35-dataset list, `beta_binomial(2, 5, 128)` | **all univariate, K = max_variates = 20** |
+| variate subsampling distribution    | `beta_binomial(2, 5, 128)` capped at total | **bucketed [0.05, 0.35, 0.55, 0.05]** capped at total |
+| in-dataset sequence sampling        | proportional to series length | uniform across series (TODO if it matters) |
+| window cropping                     | `PatchCrop` in patch units, freq-conditional patch size | `_sample_window` in raw steps, no patching |
+| history split                       | `MaskedPrediction` mask_ratio ~ U(0.15, 0.5) | `_sample_history_norm` ~ U(0.5, 0.95) inverted |
+| irregularity                        | none (regular grid)    | `LOTSAToIrregular` 4-regime degradation |
+
+The architecture differences are a separate axis (§7.J).
+
+------------------------------------------------------------------------
+
+### 7.Q  H2 result + H1 launch (2026-04-30)
+
+#### 7.Q.1  H2 finished — partial win, big diagnostic signal
+
+`H2_nostack_synth30_lotsa70_d384_cosine30000_warmup500_minstd1e-3_s42`
+ran the full 30 K cosine steps (no early stopping fired), W&B run id
+`0mu3`, wall-clock ~1 h 55 min.
+
+**Headline:** best `val/mse_z_imm_avg = 0.9359 @ step 10 K` — beats
+the 0.965 ceiling of the three prior d=384 runs (30/70, 50/50, 10/90)
+by ~3 %.
+
+**But the trajectory is unstable**:
+
+| step  | mse_z_imm_avg |
+|-------|---------------|
+|  2 K  | 1.016          |
+|  4 K  | 1.071          |
+|  6 K  | 1.094          |
+|  8 K  | 1.686          |
+| **10 K** | **0.9359**  |
+| 12 K  | 1.232          |
+| 14 K  | 1.328          |
+| 16 K  | 1.075          |
+| 22 K  | 1.055          |
+| 30 K  | 1.111          |
+
+Step 10 K reads more like a lucky checkpoint between two random-walk
+peaks than a sustained improvement.  The post-22 K plateau (~1.05–
+1.11) sits right back on the old ceiling.
+
+#### 7.Q.2  Per-IMM-TSF dataset deltas at the H2 best (step 10 K)
+
+| dataset       | V    | step-10 K z-MSE | vs prior runs                |
+|---------------|------|-----------------|-------------------------------|
+| **ClusterTrace** | 11 | 0.7366          | clear improvement            |
+| **RepoHealth**   | 10 | 0.9057          | clear improvement            |
+| **USHCN** (raw)  | 5  | 0.78 (sustained 20–30 K) | better (was ~0.85) |
+| StudentLife   | 9    | 0.8306          | small improvement            |
+| CESNET        | 10   | 1.0189          | unchanged                    |
+| GDELT         | 10   | 1.2141          | unchanged                    |
+| EPA-Air       | 4–16 | 0.7830          | unchanged                    |
+| FNSPID        | 10   | 0.3515          | unchanged                    |
+| **ILINet**    | 11   | **1.6464**      | **still broken**             |
+| activity (raw)| 5    | 0.003           | unchanged (already saturated)|
+
+The two genuine multivariate datasets we expected to benefit most from
+killing random stacking — ClusterTrace and RepoHealth — *did*
+improve.  This is partial confirmation of the wrong-prior hypothesis
+(§7.P.2).  ILINet stayed pathological → its issue is not just
+stacking.
+
+#### 7.Q.3  The diagnostic signal that actually matters: synth in-dist R²
+
+| step  | chronos2 | kernelsynth | **lotsa_degraded** |
+|-------|----------|-------------|---------------------|
+|  2 K  | +0.466   | +0.188      | **+0.019**          |
+| 10 K  | +0.494   | +0.275      | +0.026              |
+| 20 K  | +0.540   | +0.287      | +0.022              |
+| 30 K  | +0.530   | +0.298      | **+0.030**          |
+
+Synthetic R² climbs steadily for both synth sources.  LOTSA R² stays
+at **+0.03** for the entire run.  This is the loudest signal so far:
+the model can fit synthetic dynamics but **cannot fit LOTSA's real
+distribution at all** (R²≈0 means barely better than predicting the
+mean).  With a healthy decreasing `train/huber` (0.7 → 0.3) this
+has to be capacity-bound, not optimization-bound.
+
+#### 7.Q.4  H2 verdict
+
+- Random stacking *was* part of the problem, but only a small part.
+- The dominant binding constraint is **model capacity vs LOTSA
+  heterogeneity**.
+- Decision: launch H1 immediately, inheriting H2's
+  `sources_nostack.yaml` so the random-stacking fix carries forward.
+
+#### 7.Q.5  H1 launched
+
+`H1_d512_h512_perv4_fus4_head8_bs24_lr2.5e-4_cosine30000_s42`,
+W&B run id `di1k`, screen `H1_bigger`.  Started 2026-04-30 16:44 UTC.
+
+Settings:
+
+| dim                | value | note |
+|--------------------|-------|------|
+| `d_model`          | 512   | (was 384) |
+| `d_hidden`         | 512   | (was 384) |
+| `n_perv_layer`     | 4     | (was 3)   |
+| `n_fusion_blocks`  | 4     | (was 3)   |
+| `n_heads_varattn`  | 8     | (was 4)   |
+| `grid_K`           | 128   | unchanged |
+| `BATCH_SIZE`       | 24    | (was 32)  |
+| `LR`               | 2.5e-4| (was 5e-4 — halved for the 2× model) |
+| `MAX_STEPS`        | 30 K  | cosine, warmup 500 |
+| `sources_cfg`      | `sources_nostack.yaml` | inherits H2 |
+
+Observed at step ~1 K: **3.69 it/s** (better than the 2.2 it/s
+estimate), VRAM **52 GB / 80 GB** (BS=32 may fit next time),
+`train/huber ≈ 0.3–0.7`.  ETA ~2 h 15 min.
+
+The three things to read off H1 once it lands:
+1. Does `mse_z_imm_avg` push below 0.93 (and *stay* there, unlike H2)?
+2. Does `val/synth_lotsa_degraded_r2` finally lift off the +0.03 floor?
+3. Does ILINet `mse_z` come below 1.0?
+
+------------------------------------------------------------------------
+
+### 7.P  Three runs, one ceiling — H1/H2 plan (2026-04-30)
+
+#### 7.P.1  Result summary across the three single-phase runs
+
+After §7.N landed, three back-to-back single-phase runs at d=384,
+varying only the synthetic↔lotsa mix:
+
+| run                                                              | mix (synth / lotsa) | best `mse_z_imm_avg` | step    | wall-clock | ES at  |
+|------------------------------------------------------------------|---------------------|----------------------|---------|------------|--------|
+| `single_moirai_v2_synth30_lotsa70_regimeMix40_d384_cosine30000_*`| 30 / 70             | **0.965**            | 16 K    | ~2.3 h     | 30 K   |
+| `single_moirai_v2_synth50_lotsa50_d384_cosine60000_*`            | 50 / 50             | **0.997**            |  2 K    | ~2.5 h     | 22 K   |
+| `single_moirai_v2_synth10_lotsa90_d384_cosine60000_*`            | 10 / 90             | **0.966**            | 16 K    | ~3.7 h     | 36 K   |
+
+Three things stand out:
+
+1. **Same ceiling.**  All three converge to `mse_z_imm_avg ≈ 0.965`
+   within 0.03 of each other.  Mixture proportion is **not** the
+   binding constraint.
+2. **Same time-to-best.**  Two of three peak around step 16 K; the
+   50/50 run peaks earlier (2 K) and aggressively overfits to
+   synthetic from then on, but its peak is already at the same level.
+3. **Train loss still decreasing.**  At ES time, `train/huber` is
+   ~0.27 with healthy slope; the eval metric is what plateaus.
+
+That pattern — eval saturates while train keeps moving — is the
+classic signature of either (a) a learning-target / inductive-bias
+mismatch, or (b) model capacity exhaustion against the actual eval
+distribution.  We have already ruled out raw mix and raw LR schedule.
+Two hypotheses remain testable in single 30 K runs.
+
+#### 7.P.2  H2 — kill random univariate stacking
+
+`StackedLOTSASource` (default `STACK_ALL`, §7.N.2) takes K random
+univariate LOTSA records (e.g. K solar plants) and stacks them into
+a single `[K, T]` "multivariate" sample.  These K series share no
+time window, no scale, no domain, and no actual cross-variate
+relationship.  Variate-axis attention may be learning the wrong
+prior — "treat variates as independent" — because that prior is the
+*correct* one for the dominant training distribution but is
+catastrophically wrong on genuine multivariate IMM-TSF data
+(ILINet V=11, ClusterTrace V=11, …).
+
+H2 turns stacking off via `sources_nostack.yaml` and runs the
+otherwise-best mix (30 / 70) for 30 K cosine steps.
+
+- expected effect if hypothesis is right: ILINet R² flips from
+  negative to positive; `mse_z_imm_avg` drops below 0.95.
+- expected effect if hypothesis is wrong: same ceiling at 0.965, but
+  V=1 mass jumps back up so ILINet probably gets *worse*.
+
+Either outcome is informative.  Cost: one 30 K run, ~2.3 h.
+
+Script: `scripts/run_H2_nostack.sh` — launched 2026-04-30 03:13 UTC,
+screen `H2_nostack`.
+
+#### 7.P.3  H1 — capacity bump
+
+If H2 doesn't move the ceiling, the next lever is the model itself.
+The current 384-dim model is ~37 M params; downstream baselines
+(tPatchGNN, CRU) operate at 1–10 M but they are trained per-dataset.
+A foundation-style model needs more capacity to absorb LOTSA's
+diversity.
+
+H1 doubles capacity:
+
+| dim                | before | after |
+|--------------------|--------|-------|
+| `d_model`          | 384    | 512   |
+| `d_hidden`         | 384    | 512   |
+| `n_perv_layer`     | 3      | 4     |
+| `n_fusion_blocks`  | 3      | 4     |
+| `n_heads_varattn`  | 4      | 8     |
+
+~37 M → ~75 M params.  Throughput drops from 4.5 it/s to ~2.2 it/s
+on a single A100 → ~3.8 h for 30 K steps.  Batch size will likely
+need to drop from 32 → 24 (configurable via env).
+
+Script: `scripts/run_H1_bigger.sh` — staged, **not yet launched**.
+Inherits H2's `sources_nostack.yaml` so a successful H2 + H1 stack
+cleanly.
+
+#### 7.P.4  Ordering rationale
+
+Run H2 first because:
+- it's a single yaml diff (no model surgery),
+- it directly tests the largest deviation we made from Moirai
+  (Moirai stacks only ~22 curated datasets and uses
+  `beta_binomial(2,5,128)`; we stack everything at K=20),
+- if H2 fails, capacity is implicated and H1 is cleanly motivated;
+  if H2 succeeds, H1 becomes "stack on top of a working baseline"
+  rather than confounded with the stacking change.
+
+------------------------------------------------------------------------
+
 ## 8. Citations (short list)
 
 - Woo et al., 2024.  Unified Training of Universal Time Series
@@ -1194,3 +2032,15 @@ within the same stage**.  Mixing both is rejected at parse time.
 | 2026-04-26 | hongyu | §7.F First launch died at step 6749 (laptop sleep → SSH drop → SIGHUP cascade).  Re-launched `axis4_synth_only` only inside `screen -dmS axis4_synth_only`; W&B online to magicslabnorthwestern/mamba-imts-pretrain. |
 | 2026-04-26 | hongyu | §7.F Re-launched (v2) at step 4674 of v1.  Migrated W&B project to **TSKing** and renamed runs to encode mix percentages: `stageA_chronos70_kernel30_d384_huber_50k_s42` (synth_only), `stageA_chronos55_kernel25_lotsa20_d384_huber_50k_s42` (synth_lotsa).  Only the first arm runs by default; we read its result before committing to Stage B. |
 | 2026-04-26 | hongyu | §7.H Stage transition support: added `--init_from` (weights-only), kept `--ckpt` (full resume) for crash recovery; the two are mutually exclusive.  Added `_AggregateValMetricsCallback` logging `val/mse_z_imm_avg`, `val/mse_z_imts_avg`, `val/mse_z_avg_all` + a "best by val/mse_z_imm_avg" ModelCheckpoint (top-3).  Added `transition.json` provenance sidecar.  New helper `scripts/run_stage_b_from_a.sh` demonstrates the chain. |
+| 2026-04-27 | hongyu | §7.I Stage A (synth-only, 50K) + Stage B (mixed, 200K) results recorded.  Stage A best `val/mse_z_imm_avg = 1.2722 @ 15K`, Stage B best **1.1420 @ 25K** initialized from Stage A best (−10.2 %), then plateau/drift through 200K. |
+| 2026-04-27 | dawei  | Architecture: removed `variate_embed` per-slot tables in `VariableAxisAttention` and `SharedGridAligner`; added Moirai-style `_BinaryVariateAttentionBias`; collapsed `QueryReadout` to a shared head + shared `gamma`. |
+| 2026-04-27 | hongyu | §7.J Wired `var_id` through `multivariate_forecaster.forward` so the new bias actually trains (was dead code in colleague's diff); reverted the smuggled MQA conversion (K/V projections back to full `d_model`) — Moirai-1 itself uses MHA in any-variate attn and our V ≤ 20 makes MQA's KV-cache motivation moot.  Verified with autograd smoke test; old ckpts confirmed incompatible (6 dropped params, 2 shape mismatches, 7 new). |
+| 2026-04-29 | hongyu | §7.K Single-phase Stage A run (`single_phase`, `--lr_schedule multistep`).  ES tripped at step 44K / 80K when GDELT z-MSE went `inf`.  Best ckpt step 26K with `val/mse_z_imm_avg = 0.967`.  Underlying optimization was alive (train/huber 0.34 → 0.28 monotonic, synth in-dist R² 0.43 → 0.51) but eval blew up. |
+| 2026-04-29 | hongyu | §7.L Eval-explosion fix: clamp `preds_asinh` to ±10 in `_log_imts_val` before the `sinh` inverse, drop `mse_z`/`mae_z` for activity & USHCN (irrelevant — known fixed scale, paper baselines use original units; per-(b,v) z is also numerically pathological for near-constant USHCN precipitation, see §Q4).  Aggregate callback filters non-finite from the IMM-TSF mean; ES uses `check_finite=False`.  No training-time changes. |
+| 2026-04-29 | hongyu | §7.M LOTSA stalled — diagnosed via `scripts/diagnose_single_phase.py` (in-distribution snapshot, 2048 windows, separate seed, ckpt step 26K).  Root cause: 89.96 % of LOTSA sampling weight is on `solar_power` + `wind_power`, both univariate; multivariate datasets (45.9 % of count) carry only 2.0 % of weight.  Net effect: ~63 % of all training is univariate solar/wind, leaving multivariate axis-attention starved and ILINet (V=12) regressing.  Fix candidates listed; no relaunch yet. |
+| 2026-04-30 | hongyu | §7.P R1 (`single_moirai_v2_synth10_lotsa90_*`) finished: ES at 36 K, best `val/mse_z_imm_avg=0.966` @ step 16 K — same ceiling as the 30/70 (0.965) and 50/50 (0.997) runs.  Mixture proportion confirmed not the binding constraint.  Three runs collapse to one ceiling → next axis is data structure (H2: stacking) or model capacity (H1). |
+| 2026-04-30 | hongyu | §7.P H2 launched: `H2_nostack_synth30_lotsa70_d384_cosine30000_warmup500_minstd1e-3_s42`.  Single yaml diff: `configs/sources_nostack.yaml::lotsa_stacking_datasets="none"` disables `StackedLOTSASource`, leaving univariate-on-disk LOTSA datasets to emit V=1 windows; everything else identical to the 30/70 baseline.  Tests whether random univariate stacking teaches a "treat variates as independent" wrong prior that caps IMM-TSF transfer.  Screen `H2_nostack`, ETA ~2.3 h, W&B project TSKing. |
+| 2026-04-30 | hongyu | §7.P H1 staged but **not launched**: `scripts/run_H1_bigger.sh` doubles capacity (d_model 384→512, d_hidden 384→512, n_perv 3→4, n_fusion 3→4, n_heads_varattn 4→8) → ~37 M → ~75 M params.  Default `BATCH_SIZE=24`, `LR=5e-4` (consider `2.5e-4` for the bigger model), inherits `sources_nostack.yaml` so it composes with H2.  Wall-clock estimate ~3.8 h for 30 K steps on 1×A100. |
+| 2026-04-30 | hongyu | §7.Q H2 finished (full 30 K, no ES).  Best `val/mse_z_imm_avg = 0.9359 @ step 10 K` (−3 % vs 0.965 ceiling) but trajectory unstable: 1.02 → 1.69 → **0.94** → 1.23 → 1.33 → ~1.07–1.11 plateau.  Per-dataset wins on ClusterTrace (V=11) and RepoHealth (V=10) — partial confirmation of the wrong-stacking-prior hypothesis.  ILINet still broken (1.65), CESNET/GDELT/EPA-Air/FNSPID unchanged.  USHCN sustained improvement to ~0.79.  Loudest signal: `val/synth_lotsa_degraded_r2 = +0.03` for the entire run (vs +0.53/+0.30 for chronos2/kernel) → model cannot fit LOTSA real distribution at d=384.  Decision: launch H1. |
+| 2026-04-30 | hongyu | §7.Q H1 launched: `H1_d512_h512_perv4_fus4_head8_bs24_lr2.5e-4_cosine30000_s42` (W&B `di1k`, screen `H1_bigger`).  Doubled arch (~37 M → ~75 M params), `BATCH_SIZE=24`, `LR=2.5e-4` (halved for the bigger model), inherits H2's `sources_nostack.yaml`.  Observed throughput at step ~1 K: 3.69 it/s, VRAM 52 / 80 GB, `train/huber ≈ 0.3–0.7`.  ETA ~2 h 15 min.  Three reads: (a) does `mse_z_imm_avg` push below 0.93 and stay there, (b) does `lotsa_degraded_r2` lift off +0.03, (c) does ILINet drop below 1.0. |
+| 2026-04-29 | hongyu | §7.N Moirai-style sampling fix landed.  (1) `make_logical_source` now weights datasets by `num_ts × yaml_w` — solar/wind drop from 89.96 % → 2.27 % of LOTSA mass, top-1 dataset 4.25 %, mass spread over 30+ datasets.  (2) `StackedLOTSASource` wraps univariate-on-disk LOTSA via `MultiSampleTimeSeriesDataset`-style stacking (`K = max_variates = 20`); natively-MV passes through.  (3) Default policy `STACK_ALL` — more aggressive than Moirai's curated list to cover all univariate datasets.  (4) `variate_count_dist` retuned to `[0.05, 0.35, 0.55, 0.05]` to align with IMM-TSF Table-1 V distribution.  Smoke test (`scripts/diagnose_moirai_sampling.py`, N=2048, post-transform): V=9..16 mass 9 % → 41.6 %, V=1 mass 63 % → 7.9 %.  (5) LR schedule switched to cosine 30 K (warmup 500), replacing multistep 80 K which never decayed before ES.  Run name: `single_moirai_v2_synth30_lotsa70_regimeMix40_d384_cosine30000_warmup500_s42`.  No relaunch yet — awaiting user approval. |

@@ -72,14 +72,46 @@ def make_logical_source(
     ``weight_map`` (keyed by ``IterableSource.name`` after the
     ``"lotsa:"`` prefix is stripped). Sources not in the map fall back
     to weight 1.0.
+
+    **Moirai weighting (Woo et al., 2024, §3.2)**
+
+    Moirai's published ``lotsa_v1_weighted.yaml`` lists per-series
+    multipliers, NOT per-dataset probabilities.  Their effective dataset
+    sampling probability is
+
+        p(D_k) ∝ num_ts_k × yaml_weight_k
+
+    because their ``ConcatDataset(TimeSeriesDataset(__len__ =
+    num_ts × dataset_weight))`` samples uniformly over indices.  The
+    per-series multiplier is precomputed so that ``num_ts × yaml_weight
+    = ω_k`` where ``ω_k = min(num_observations_k / total_obs, ε)`` for
+    ``ε = 0.001`` — that is, the cap is *baked into the YAML*.
+
+    Treating ``yaml_weight`` directly as the sampling probability (our
+    pre-2026-04-29 behavior) is wrong.  It gave ``solar_power`` (1
+    series, weight 33,835) and ``wind_power`` (same) a combined ~90 %
+    of LOTSA mass, vs Moirai's intended ~2.2 % combined.
+
+    Fix: weight by ``len(source) × yaml_weight`` so the resulting
+    sampling probability equals Moirai's ``ω_k_capped``.  See README
+    §7.M / §7.N.
     """
     if not physical_sources:
         raise ValueError(f"[{name}] no physical sources")
     if weight_map is None:
+        # No weight map -> equal mass per dataset (sub-dataset uniform).
+        # We do NOT multiply by num_ts here because the user explicitly
+        # opted out of any prior over datasets.
         w = np.ones(len(physical_sources), dtype=np.float64)
     else:
+        # Moirai-faithful weighting: yaml_weight is a per-series
+        # multiplier; multiply by num_ts to get the dataset's
+        # contribution to the (capped) sampling probability.
         w = np.array(
-            [_lookup_weight(s.name, weight_map) for s in physical_sources],
+            [
+                _lookup_weight(s.name, weight_map) * max(1, len(s))
+                for s in physical_sources
+            ],
             dtype=np.float64,
         )
         if (w == 0).all():

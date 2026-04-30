@@ -32,10 +32,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import yaml
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 
 from ..mamba_mv.multivariate_forecaster import (
@@ -81,6 +82,7 @@ def _build_model(args: argparse.Namespace) -> pl.LightningModule:
         # Pretraining-specific
         loss_type=args.loss,
         huber_delta=args.huber_delta,
+        lr_schedule=args.lr_schedule,
     )
     if args.arch == "sandwich":
         kwargs.update(n_tail_grid_mamba=args.n_tail_grid_mamba)
@@ -166,20 +168,221 @@ def _dump_ablation_sidecar(args: argparse.Namespace) -> None:
     print(f"[ablation] wrote {out_path}")
 
 
+class _SynthInDistValCallback(pl.Callback):
+    """Run model on a fixed snapshot of synthetic windows every val cycle.
+
+    Train loss alone is hard to read because each batch is a different random
+    sample.  An in-distribution val set (= same windows every cycle, in the
+    same data distribution as train) gives a much cleaner signal for "is the
+    model still learning."
+
+    Snapshot is built at trainer setup time from a fresh dataloader with
+    `seed=stage_seed + 1000` so it doesn't overlap with training samples
+    in the early epochs.  The snapshot is held in CPU memory.
+
+    Logs (in asinh-z space, same as train/huber):
+        val/synth_huber           — mean huber loss over the snapshot
+        val/synth_mse_z           — z-MSE in raw z-space (sinh-inverted preds)
+        val/synth_mae_z           — z-MAE in raw z-space
+        val/synth_r2_overall      — pooled R^2 over all observations
+        val/synth_chronos2_r2     — R^2 restricted to chronos2_synth windows
+        val/synth_kernelsynth_r2  — R^2 restricted to kernelsynth windows
+    """
+
+    def __init__(
+        self,
+        n_windows: int = 512,
+        batch_size: int = 32,
+        seed_offset: int = 1000,
+    ):
+        super().__init__()
+        self.n_windows = int(n_windows)
+        self.batch_size = int(batch_size)
+        self.seed_offset = int(seed_offset)
+        self._batches: list[dict] = []        # CPU tensors
+        self._sources: list[list[str]] = []   # per-batch source names
+        self._snapshot_built = False
+
+    def _build_snapshot(self, trainer: pl.Trainer) -> None:
+        if self._snapshot_built:
+            return
+        # Construct a fresh dataloader from the same datamodule but with
+        # a different seed.  Using train_dataloader directly because val
+        # in this codebase is OOD; we want IN-distribution for this.
+        dm = trainer.datamodule
+        if dm is None:
+            print("[synth-val] no datamodule attached; skipping snapshot")
+            return
+
+        from .datamodule import PretrainDataModule, PretrainDataModuleArgs
+        if not isinstance(dm, PretrainDataModule):
+            print(f"[synth-val] datamodule type {type(dm).__name__} unsupported; skipping")
+            return
+
+        snap_args = PretrainDataModuleArgs(
+            stage_cfg_path=dm.args.stage_cfg_path,
+            sources_cfg_path=dm.args.sources_cfg_path,
+            batch_size=self.batch_size,
+            num_workers=2,
+            max_dim=dm.args.max_dim,
+            seed=dm.args.seed + self.seed_offset,
+            persistent_workers=False,
+        )
+        snap_dm = PretrainDataModule(snap_args)
+        snap_dm.setup()
+        snap_dl = snap_dm.train_dataloader()
+
+        n_collected = 0
+        for batch in snap_dl:
+            # Move to CPU + clone so the snapshot is independent.
+            cpu_batch = {
+                k: (v.detach().clone().cpu() if isinstance(v, torch.Tensor) else v)
+                for k, v in batch.items()
+            }
+            self._batches.append(cpu_batch)
+            self._sources.append(list(batch.get("source_name", [])))
+            n_collected += int(batch["values"].shape[0])
+            if n_collected >= self.n_windows:
+                break
+        self._snapshot_built = True
+        print(f"[synth-val] snapshot built: {n_collected} windows in {len(self._batches)} batches "
+              f"(seed={snap_args.seed})")
+
+    def setup(self, trainer, pl_module, stage):
+        if stage == "fit":
+            self._build_snapshot(trainer)
+
+    @torch.no_grad()
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self._batches:
+            return
+
+        device = pl_module.device
+        was_training = pl_module.training
+        pl_module.eval()
+
+        sum_huber = 0.0
+        sum_mse_z = 0.0
+        sum_mae_z = 0.0
+        n_pred = 0
+        per_src_truth: dict[str, list[torch.Tensor]] = {}
+        per_src_pred: dict[str, list[torch.Tensor]] = {}
+        all_truth: list[torch.Tensor] = []
+        all_pred: list[torch.Tensor] = []
+
+        for batch_cpu, sources in zip(self._batches, self._sources):
+            batch_g = {
+                k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v)
+                for k, v in batch_cpu.items()
+            }
+            preds_asinh = pl_module(batch_g)
+            pm = batch_g["pred_mask"]
+            n = int(pm.sum().item())
+            if n == 0:
+                continue
+
+            # Train loss is in asinh-z, so synth_huber is comparable to train/huber.
+            truth_asinh = batch_g["values"]
+            diff_asinh = (preds_asinh - truth_asinh)[pm]
+            huber = torch.nn.functional.smooth_l1_loss(
+                preds_asinh[pm], truth_asinh[pm], beta=1.0, reduction="sum",
+            )
+            sum_huber += float(huber.item())
+
+            # raw-z metrics: invert asinh.
+            #
+            # 2026-04-29: clamp BOTH preds_asinh AND truth_asinh to ±10
+            # before sinh inversion (same fix as §7.L for IMM-TSF eval).
+            # Some lotsa snapshot windows have truth_asinh ≈ 20 from
+            # heavy-tailed real-world series (rare big spikes in
+            # otherwise near-zero data — e.g., sensor faults, sparse
+            # counts).  Without clamping, sinh(20) ≈ 3e8 dominates the
+            # pooled R²/MSE calc → val/synth_lotsa_degraded_r2 stays
+            # frozen at -0.0005 across all steps.  See README §7.O.
+            preds_a_c = preds_asinh.clamp(-10.0, 10.0)
+            truth_a_c = truth_asinh.clamp(-10.0, 10.0)
+            preds_z = torch.sinh(preds_a_c)
+            truth_z = torch.sinh(truth_a_c)
+            diff_z = (preds_z - truth_z)[pm].float()
+            sum_mse_z += float((diff_z ** 2).sum().item())
+            sum_mae_z += float(diff_z.abs().sum().item())
+            n_pred += n
+
+            # Per-source for R^2 — flatten and assign each (b, v, l)
+            # contribution to the source of its batch element b.
+            B = preds_z.shape[0]
+            for b in range(B):
+                m = pm[b]
+                if not bool(m.any()):
+                    continue
+                t_b = truth_z[b][m].float().detach().cpu()
+                p_b = preds_z[b][m].float().detach().cpu()
+                src = sources[b] if b < len(sources) else "?"
+                per_src_truth.setdefault(src, []).append(t_b)
+                per_src_pred.setdefault(src, []).append(p_b)
+                all_truth.append(t_b)
+                all_pred.append(p_b)
+
+        if was_training:
+            pl_module.train()
+
+        if n_pred == 0:
+            return
+
+        pl_module.log("val/synth_huber", sum_huber / n_pred, sync_dist=False, add_dataloader_idx=False)
+        pl_module.log("val/synth_mse_z", sum_mse_z / n_pred, sync_dist=False, add_dataloader_idx=False)
+        pl_module.log("val/synth_mae_z", sum_mae_z / n_pred, sync_dist=False, add_dataloader_idx=False)
+
+        # Pooled R^2 = 1 - SS_res / SS_tot
+        if all_truth:
+            t_all = torch.cat(all_truth)
+            p_all = torch.cat(all_pred)
+            ss_res = float(((t_all - p_all) ** 2).sum().item())
+            ss_tot = float(((t_all - t_all.mean()) ** 2).sum().item())
+            if ss_tot > 1e-12:
+                pl_module.log("val/synth_r2_overall", 1.0 - ss_res / ss_tot,
+                              sync_dist=False, add_dataloader_idx=False)
+
+        for src in sorted(per_src_truth):
+            t = torch.cat(per_src_truth[src])
+            p = torch.cat(per_src_pred[src])
+            ss_res = float(((t - p) ** 2).sum().item())
+            ss_tot = float(((t - t.mean()) ** 2).sum().item())
+            if ss_tot > 1e-12:
+                # Strip "synth:" prefix if present so wandb names are clean.
+                tag = src.split(":", 1)[-1] if ":" in src else src
+                pl_module.log(f"val/synth_{tag}_r2", 1.0 - ss_res / ss_tot,
+                              sync_dist=False, add_dataloader_idx=False)
+
+
 class _AggregateValMetricsCallback(pl.Callback):
     """Compute aggregate val metrics after each validation epoch.
 
+    Two metric "spaces" are aggregated:
+
+    1. ``mse_z`` / ``mae_z`` over the **8 IMM-TSF datasets** only.
+       This is paper-comparable space; the per-record per-feature
+       z-score is the IMM-TSF normalization (parse_datasets.py:103-111
+       + evaluation.py:27-30).  Activity / USHCN are intentionally
+       excluded because per-(b,v) z collapses for near-constant series
+       (USHCN precipitation, see README §Q4) and the published baselines
+       for those datasets report **original-unit** MSE anyway.
+
+    2. ``mse`` / ``mae`` over both IMM-TSF and the activity/ushcn
+       loaders.  Original units; useful for sanity / dashboards but
+       not directly comparable across datasets due to scale heterogeneity.
+
     Logs:
-        ``val/mse_z_imm_avg``  : mean of ``val/mse_z_imm_{ds}`` across the
-                                 8 IMM-TSF datasets (paper-comparable space)
+        ``val/mse_z_imm_avg``  : mean of ``val/mse_z_imm_{ds}`` across 8 IMM-TSF
         ``val/mae_z_imm_avg``  : same for MAE
         ``val/mse_imm_avg``    : mean of ``val/mse_imm_{ds}`` (original units)
-        ``val/mse_z_imts_avg`` : mean of ``val/mse_z_{activity,ushcn}``
-        ``val/mse_z_avg_all``  : mean of all 10 z-scored MSEs
+        ``val/mae_imm_avg``    : same for MAE
+        ``val/mse_imts_avg``   : mean of ``val/mse_{activity,ushcn}`` (orig)
+        ``val/mae_imts_avg``   : same
+        ``val/mse_avg_all``    : mean of all 10 original-unit MSEs
 
-    The first metric is the primary axis-4 decision number per
-    pretrain/README.md §7.F: "compare val/mse_z_imm_<ds> avg across 8
-    IMM-TSF datasets; tiebreak with val/mse_activity + val/mse_ushcn".
+    ``val/mse_z_imm_avg`` is the primary axis-4 / ES decision number
+    per pretrain/README.md §7.F.
     """
 
     IMM_DATASETS = (
@@ -196,12 +399,26 @@ class _AggregateValMetricsCallback(pl.Callback):
             for k in keys:
                 if k in cm:
                     try:
-                        vals.append(float(cm[k]))
+                        v = float(cm[k])
+                        # Filter non-finite (a single bad ckpt eval can
+                        # produce inf on the IMM-TSF side; we don't want
+                        # one inf to poison the average and trip ES).
+                        if np.isfinite(v):
+                            vals.append(v)
                     except Exception:
                         pass
             return None if not vals else sum(vals) / len(vals)
 
-        for root in ("mse_z", "mae_z", "mse", "mae"):
+        # z-space metrics: only over IMM-TSF (paper-comparable)
+        for root in ("mse_z", "mae_z"):
+            imm_keys = [f"val/{root}_imm_{d}" for d in self.IMM_DATASETS]
+            imm_avg = _mean_of(imm_keys)
+            if imm_avg is not None:
+                pl_module.log(f"val/{root}_imm_avg", imm_avg,
+                              sync_dist=False, add_dataloader_idx=False)
+
+        # Original-unit metrics: aggregate over IMM-TSF, IMTS, and all
+        for root in ("mse", "mae"):
             imm_keys = [f"val/{root}_imm_{d}" for d in self.IMM_DATASETS]
             imts_keys = [f"val/{root}_{d}" for d in self.IMTS_DATASETS]
 
@@ -411,6 +628,11 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--num_warmup_steps", type=int, default=200)
+    # LR schedule choice. ``cosine`` (default) decays peak LR -> 0 over
+    # the run; ``constant`` holds peak LR after warmup.  Use ``constant``
+    # to test whether the late-training val plateau is an LR-decay
+    # artifact vs a real model-capacity ceiling.
+    p.add_argument("--lr_schedule", choices=["cosine", "constant", "multistep"], default="cosine")
     # Trainer
     p.add_argument("--max_steps", type=int, default=1000)
     p.add_argument("--max_minutes", type=float, default=None,
@@ -446,6 +668,28 @@ def main() -> None:
                    help="(optional) name of the ablation axis this run belongs to")
     p.add_argument("--ablation_level", default=None,
                    help="(optional) level within the ablation axis")
+    # Early stopping (see pretrain/README.md §7.K). Disabled by default;
+    # turn on with --early_stop_metric to pick a val key to monitor.
+    # Only fires after the *first* val epoch where the metric appears.
+    p.add_argument("--early_stop_metric", default=None,
+                   help="val/* metric key to monitor; e.g. 'val/mse_z_imm_avg'. "
+                        "Empty disables early stopping.")
+    p.add_argument("--early_stop_patience", type=int, default=6,
+                   help="number of val epochs without improvement before stopping (default: 6)")
+    p.add_argument("--early_stop_min_delta", type=float, default=0.0,
+                   help="minimum improvement to count as 'better' (default: 0.0)")
+    p.add_argument("--early_stop_mode", choices=["min", "max"], default="min",
+                   help="'min' for losses, 'max' for accuracy-like metrics (default: min)")
+    # Synthetic in-distribution val (see _SynthInDistValCallback).
+    # Not enabled by default — only useful when training on synth-bearing
+    # mixes (chronos2 / kernelsynth).
+    p.add_argument("--synth_val_n_windows", type=int, default=0,
+                   help="if >0, snapshot N windows from a fresh dataloader at "
+                        "trainer setup and evaluate the model on them every val cycle. "
+                        "Logs val/synth_huber, val/synth_mse_z, val/synth_r2_overall, "
+                        "val/synth_<source>_r2.")
+    p.add_argument("--synth_val_batch_size", type=int, default=32)
+    p.add_argument("--synth_val_seed_offset", type=int, default=1000)
     # W&B (see pretrain/README.md §7.G). Gated by --use_wandb so profiling
     # and smoke tests stay local-only (CSVLogger is always on).  Mirrors
     # the same flag names as imts_benchmark/mamba_mv/train_mv.py so the
@@ -576,6 +820,41 @@ def main() -> None:
                 save_top_k=3,
                 save_last=False,
                 auto_insert_metric_name=False,
+            )
+        )
+
+    # (3) Synthetic in-distribution val (opt-in via --synth_val_n_windows).
+    # Snapshot is built once at fit-start; per-cycle inference adds ~5s.
+    if args.synth_val_n_windows > 0:
+        callbacks.append(
+            _SynthInDistValCallback(
+                n_windows=args.synth_val_n_windows,
+                batch_size=args.synth_val_batch_size,
+                seed_offset=args.synth_val_seed_offset,
+            )
+        )
+
+    # (4) Early stopping (opt-in via --early_stop_metric).  Lightning will
+    # only consult this callback at validation_epoch_end, so cadence is
+    # tied to --val_check_steps.  Patience is in *val epochs*, not steps.
+    #
+    # ``check_finite=False`` because the asinh→sinh inversion in
+    # _log_imts_val can produce a single inf z-MSE if the model emits
+    # an out-of-range asinh-z prediction (see README §7.K).  Aggregate
+    # callback already filters non-finite values from the IMM-TSF mean
+    # before logging, so val/mse_z_imm_avg is always finite as long as
+    # ≥1 of 8 datasets evaluated cleanly.  But we want ES to gracefully
+    # skip a transient blowup rather than terminate the whole run.
+    if args.early_stop_metric:
+        callbacks.append(
+            EarlyStopping(
+                monitor=args.early_stop_metric,
+                mode=args.early_stop_mode,
+                patience=args.early_stop_patience,
+                min_delta=args.early_stop_min_delta,
+                strict=True,
+                verbose=True,
+                check_finite=False,
             )
         )
     csv_logger = CSVLogger(save_dir=args.output_dir, name="csv")

@@ -110,11 +110,13 @@ class IMTSValDataset(Dataset):
         min_std: float = 1e-3,
         norm_mode: str | None = None,
         dataset_name: str | None = None,
+        use_asinh: bool = True,
     ):
         super().__init__()
         self.regime = regime
         self.split = split
         self.min_std = float(min_std)
+        self.use_asinh = bool(use_asinh)
 
         ds_dir = Path(data_root) / regime / split
         meta_path = Path(data_root) / regime / "norm_stats.json"
@@ -188,12 +190,23 @@ class IMTSValDataset(Dataset):
         std = np.ones(V, dtype=np.float32)
         vals_z: list[np.ndarray] = []
 
+        # When use_asinh, we squash standardized values via arcsinh.  The
+        # per-(b,v) (mu, std) stored in the sample is the *raw-z* mu/std
+        # so val_step can recover raw z via (orig - mu) / std and orig
+        # via sinh(pred_asinh) * std + mu.  See README §3.5 + §Q4.
+        std_floor = self.min_std if self.use_asinh else 1e-3
+
+        def _maybe_asinh(z: np.ndarray) -> np.ndarray:
+            return np.arcsinh(z).astype(np.float32) if self.use_asinh else z.astype(np.float32)
+
         if self.norm_mode == "precomputed_per_record":
-            # IMM-TSF mirror: use the per-record global (mu, std) stored
-            # at convert time.  This matches IMM-TSF/lib/parse_datasets.py
+            # IMM-TSF mirror: use the per-record per-feature (mu, std)
+            # stored at convert time, mirroring IMM-TSF/lib/parse_datasets.py
             # lines 103-111 (per-record per-feature z-score over the full
-            # record, computed before chunking), so MSE/MAE on the test
-            # split is byte-comparable to the IMM-TSF paper Table.
+            # record, computed before chunking).  After standardization we
+            # additionally apply arcsinh so the input is in asinh-z space
+            # consistent with training; val_step inverts with sinh before
+            # computing the paper-comparable raw z-MSE.
             mu_row = np.asarray(row.get("value_mu_per_var", []), dtype=np.float32)
             sd_row = np.asarray(row.get("value_std_per_var", []), dtype=np.float32)
             if mu_row.size != V or sd_row.size != V:
@@ -204,11 +217,12 @@ class IMTSValDataset(Dataset):
                 )
             for v in range(V):
                 m = float(mu_row[v])
-                s = max(float(sd_row[v]), self.min_std)
+                s = max(float(sd_row[v]), std_floor)
                 mu[v] = m
                 std[v] = s
                 if vals_pv[v].size > 0:
-                    vals_z.append(((vals_pv[v] - m) / s).astype(np.float32))
+                    z_raw = (vals_pv[v] - m) / s
+                    vals_z.append(_maybe_asinh(z_raw))
                 else:
                     vals_z.append(vals_pv[v].copy())
         else:
@@ -236,10 +250,11 @@ class IMTSValDataset(Dataset):
                     s = float(x64.std())
                 else:
                     m, s = 0.0, 1.0
-                s = max(s, self.min_std)
+                s = max(s, std_floor)
                 mu[v] = m
                 std[v] = s
-                vals_z.append(((vals - m) / s).astype(np.float32))
+                z_raw = (vals - m) / s
+                vals_z.append(_maybe_asinh(z_raw))
 
         return IMTSValSample(
             item_id=str(row.get("item_id", i)),

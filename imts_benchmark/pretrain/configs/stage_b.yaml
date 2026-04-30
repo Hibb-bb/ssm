@@ -12,7 +12,7 @@ stage:
   tail_prediction_range: [0.92, 0.98]
   task_type_probs: [0.20, 0.50, 0.30]
   regime_dist:     [0.15, 0.15, 0.45, 0.25]
-  min_ctx_obs_per_target: 3
+  min_ctx_obs_per_target: 8
   min_pred_obs_per_target: 1
   min_ctx_obs_per_aux: 1
   clean_target_mode: true

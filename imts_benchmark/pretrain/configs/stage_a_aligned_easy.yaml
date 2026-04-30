@@ -1,0 +1,64 @@
+# Stage A — aligned curriculum, phase 1 (EASY).
+#
+# Strategy A from the README §post-curriculum design discussion.
+# Key alignment principles:
+#   1. Task type 95% all-target (was 50%) — drop univariate (5%) + drop
+#      partial-target with aux (0%); both are unmeasured by val.
+#   2. Variate count distribution shifted from [.10, .60, .25, .05] to
+#      [.05, .40, .50, .05] — IMM-TSF Table 1 shows 5 of 8 datasets are
+#      V in [9, 16], not [2, 8] as previously assumed.
+#   3. per_var_max_length 256 -> 384 — covers EPA-Air & CESNET full
+#      per-variate context (~290-330 obs at hourly).
+#   4. Source mix LOTSA-heavy (70% LOTSA + 30% synth) for transfer +
+#      multivariate-structure exposure from synth.
+#   5. lotsa_degraded uses clean_target_mode=False — degrade context
+#      AND future, predict only at observations that survived.  Matches
+#      IMM-TSF eval (which evaluates at observed timestamps only).
+#   6. Per-LOTSA-subset weighting via Moirai's
+#      lotsa_v1_weighted.yaml (already wired in datamodule.py).
+#
+# Phase 1 (this, steps 0-10K): mostly regular regime to learn forecasting
+# basics on a stable distribution before harder irregularity hits.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 384
+  max_variates: 20
+  variate_count_dist:    [0.05, 0.40, 0.50, 0.05]   # CORRECTED per IMM-TSF Table 1
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.05, 0.95, 0.0]                # ALIGNED: drop partial-target
+  regime_dist:     [0.50, 0.15, 0.25, 0.10]         # PHASE 1: easy
+  min_ctx_obs_per_target: 8
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+# 70% LOTSA + 30% synthetic.  LOTSA carries real-world transfer signal;
+# synthetic carries multivariate-structure variety since most LOTSA
+# sub-datasets are univariate or low-V.
+mix:
+  chronos2_synth: 0.20
+  kernelsynth:    0.10
+  lotsa_regular:  0.50
+  lotsa_degraded: 0.20
+
+overrides:
+  chronos2_synth:
+    regime_dist: [0.50, 0.15, 0.25, 0.10]
+    task_type_probs: [0.05, 0.95, 0.0]
+  kernelsynth:
+    regime_dist: [0.50, 0.15, 0.25, 0.10]
+    task_type_probs: [0.05, 0.95, 0.0]
+  lotsa_regular:
+    regime_dist: [1.0, 0.0, 0.0, 0.0]
+    task_type_probs: [0.05, 0.95, 0.0]
+    clean_target_mode: false
+  lotsa_degraded:
+    regime_dist: [0.50, 0.15, 0.25, 0.10]
+    task_type_probs: [0.05, 0.95, 0.0]
+    # IMM-TSF eval format: degrade context AND future, predict only at
+    # observations that survived.  Don't supervise on hypothetical clean
+    # future timestamps that the eval never asks about.
+    clean_target_mode: false

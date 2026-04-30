@@ -2,8 +2,18 @@
 
 At each grid time s_k, variates attend to each other. Availability mask
 biases keys/values so unavailable variates do not provide evidence.
-Staleness + variate-id + availability are re-injected as additive
-embeddings before the QKV projection (matches the paper's `tilde H`).
+Staleness + availability are re-injected as additive embeddings before
+the QKV projection (matches the paper's `tilde H`).
+
+Variate-identity is *not* injected as a per-slot learned embedding —
+that approach binds meaning to slot indices, but our pretraining
+collator randomizes slot assignments per batch, making per-slot
+embeddings nothing but noise.  Instead, we expose a Moirai-style
+optional ``var_id`` argument and add a learned per-head bias keyed only
+on whether two tokens share the same variate ID (``_BinaryVariateAttentionBias``).
+This is permutation-equivariant over variates and generalizes to any
+variate count.  Reference: Woo et al., 2024, §3.2 ("Any-Variate
+Attention"), arXiv:2402.02592.
 
 Block: pre-norm MHA + residual + LayerNorm.
 
@@ -67,10 +77,14 @@ class VariableAxisAttention(nn.Module):
         self.rho_embed = nn.Linear(2 * n_freq_rho, d_model)
         self.n_freq_rho = n_freq_rho
 
-        # Multi-query attention (MQA): many query heads, shared key/value.
+        # Standard multi-head attention (matches Moirai-1's any-variate
+        # attention).  We deliberately do NOT use MQA here: the variable
+        # axis only has V <= max_dim tokens per grid step, so attention
+        # cost is already negligible (V^2 = 400 ops at most), and the KV
+        # cache motivation for MQA does not apply.
         self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model // n_heads)
-        self.v_proj = nn.Linear(d_model, d_model // n_heads)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
         self.o_proj = nn.Linear(d_model, d_model)
         self.var_bias = _BinaryVariateAttentionBias(n_heads=n_heads)
 
@@ -96,14 +110,15 @@ class VariableAxisAttention(nn.Module):
         x_tilde = x_tilde.view(B * K, V, D)
         d_head = D // self.n_heads
 
-        # Q: [N, H, V, d_head]
         q = self.q_proj(x_tilde).view(B * K, V, self.n_heads, d_head).transpose(1, 2)
-        # K/V are shared across heads (MQA): [N, 1, V, d_head] -> expand to [N, H, V, d_head]
-        k = self.k_proj(x_tilde).view(B * K, V, 1, d_head).transpose(1, 2).expand(-1, self.n_heads, -1, -1)
-        v = self.v_proj(x_tilde).view(B * K, V, 1, d_head).transpose(1, 2).expand(-1, self.n_heads, -1, -1)
+        k = self.k_proj(x_tilde).view(B * K, V, self.n_heads, d_head).transpose(1, 2)
+        v = self.v_proj(x_tilde).view(B * K, V, self.n_heads, d_head).transpose(1, 2)
 
         # Optional variate-ID bias. If var_id is not provided, we do not inject
-        # any non-permutation-equivariant signal.
+        # any non-permutation-equivariant signal — i.e. attention becomes fully
+        # symmetric across variates.  Pass per-batch random IDs in training and
+        # slot indices at inference for the bias to learn "same vs different
+        # variate" structure (Moirai any-variate attention protocol).
         bias = None
         if var_id is not None:
             if var_id.ndim == 2:  # [B, V] -> [B, K, V]
@@ -116,7 +131,7 @@ class VariableAxisAttention(nn.Module):
         # unavailable slots still see some content and are later ignored by
         # downstream modules via `avail`.
         key_mask = avail.view(B * K, 1, 1, V)  # True = allowed
-        scale = (d_head) ** -0.5
+        scale = d_head ** -0.5
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B*K, H, V, V]
         if bias is not None:
             scores = scores + bias

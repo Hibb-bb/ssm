@@ -312,6 +312,14 @@ REGIMES = {
         "jitter": TimestampJitter(jitter_fraction=(0.05, 0.15), apply_prob=0.3),
     },
     "async": {
+        # NOTE: ``StartDelay`` was removed on 2026-04-28 after the
+        # diagnostics in README §Q4 / §start_delay_removal.  StartDelay
+        # could drop up to 50% of the per-variate prefix on top of
+        # RandomDrops + RegularGaps, leaving as few as 3 context obs
+        # for "good" samples (= just barely passing the old
+        # min_ctx_obs_per_target=3 floor).  Removing it makes async still
+        # ~50% per-variate worst case (RandomDrops 0.20-0.50 +
+        # RegularGaps ~50%), but no longer catastrophic.
         "augmentations": [
             ("random_drops_async", RandomDrops(drop_fraction=(0.20, 0.50), sync_variates=False)),
             ("regular_gaps_async", RegularGaps(
@@ -319,7 +327,6 @@ REGIMES = {
                 period_fraction=(0.20, 0.60),
                 sync_variates=False,
             )),
-            ("start_delay",        StartDelay(max_prefix_fraction=(0.0, 0.5), apply_prob=0.6)),
         ],
         "noise": ResampleNoise(uncertainty=(0.0, 0.05)),
         "jitter": TimestampJitter(jitter_fraction=(0.10, 0.30), apply_prob=0.5),

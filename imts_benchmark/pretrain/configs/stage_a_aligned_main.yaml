@@ -1,0 +1,42 @@
+# Stage A — aligned curriculum, phase 2 (MAIN).
+#
+# Loads phase-1 best ckpt via --init_from.  Source mix shifts toward
+# more degraded LOTSA + harder regime distribution.
+
+stage:
+  per_var_min_length: 64
+  per_var_max_length: 384
+  max_variates: 20
+  variate_count_dist:    [0.05, 0.40, 0.50, 0.05]
+  context_fraction:      [0.5, 0.95]
+  tail_prediction_prob:  0.05
+  tail_prediction_range: [0.92, 0.98]
+  task_type_probs: [0.05, 0.95, 0.0]
+  regime_dist:     [0.30, 0.15, 0.35, 0.20]         # PHASE 2: main
+  min_ctx_obs_per_target: 8
+  min_pred_obs_per_target: 1
+  min_ctx_obs_per_aux: 1
+  clean_target_mode: true
+
+# Phase 2 shifts emphasis to degraded LOTSA (40% vs 20% in phase 1).
+mix:
+  chronos2_synth: 0.20
+  kernelsynth:    0.10
+  lotsa_regular:  0.30
+  lotsa_degraded: 0.40
+
+overrides:
+  chronos2_synth:
+    regime_dist: [0.30, 0.15, 0.35, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+  kernelsynth:
+    regime_dist: [0.30, 0.15, 0.35, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+  lotsa_regular:
+    regime_dist: [1.0, 0.0, 0.0, 0.0]
+    task_type_probs: [0.05, 0.95, 0.0]
+    clean_target_mode: false
+  lotsa_degraded:
+    regime_dist: [0.30, 0.15, 0.35, 0.20]
+    task_type_probs: [0.05, 0.95, 0.0]
+    clean_target_mode: false

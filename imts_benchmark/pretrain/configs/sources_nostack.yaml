@@ -1,0 +1,28 @@
+# H2 source registry: identical to sources.yaml except stacking is OFF.
+#
+# StackedLOTSASource takes K random univariate LOTSA records and stacks
+# them into a [K, T] sample with no shared time window or scale.  H2
+# tests the hypothesis that this random-stacking teaches a "treat
+# variates as independent" wrong prior and blocks IMM-TSF transfer.
+
+lotsa_root: "/home/ubuntu/lotsa_data"
+lotsa_weighted_yaml: "/home/ubuntu/uni2ts/cli/conf/pretrain/data/lotsa_v1_weighted.yaml"
+
+lotsa_include: null
+lotsa_exclude:
+  - buildings_900k
+  - largest_2017
+  - largest_2018
+  - largest_2019
+  - largest_2020
+  - largest_2021
+
+# H2 ONLY: disable Moirai-style stacking; univariate-on-disk LOTSA
+# datasets emit V=1 windows.  The downstream LOTSAToIrregular sampler
+# still picks V from variate_count_dist, capped at total_var, so when
+# total_var=1 (univariate-on-disk) the model just sees V=1.
+lotsa_stacking_datasets: "none"
+
+synthetic:
+  chronos2_synth: "/home/ubuntu/hongyu/ssm/imts_benchmark/synthetic_data/chronos2-synth.arrow"
+  kernelsynth:    "/home/ubuntu/hongyu/ssm/imts_benchmark/synthetic_data/kernelsynth-irregular.arrow"
