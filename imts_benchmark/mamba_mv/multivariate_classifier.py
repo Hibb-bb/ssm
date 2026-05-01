@@ -44,6 +44,7 @@ class MultivariateMambaClassifier(pl.LightningModule):
         t_max: float = 1.0,
         n_freq: int = 8,
         head_use_avail_mask: bool = True,
+        head_dropout: float = 0.0,
         # Optimizer / schedule.
         lr: float = 1e-3,
         weight_decay: float = 0.05,
@@ -96,6 +97,7 @@ class MultivariateMambaClassifier(pl.LightningModule):
             d_model=d_model,
             n_classes=n_classes,
             use_avail_mask=head_use_avail_mask,
+            head_dropout=head_dropout,
         )
 
         if class_weights is not None:
@@ -156,7 +158,49 @@ class MultivariateMambaClassifier(pl.LightningModule):
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch, batch_idx):
-        return self._shared_step(batch, "val")
+        # Run the shared step (logs val/loss + val/acc), then stash preds so we
+        # can compute macro_f1 in `on_validation_epoch_end`. Macro_f1 on val is
+        # required by the v2 aggregator's collapse detector — without it, an LR
+        # that drives the model into majority-class collapse can win the picker
+        # on imbalanced datasets (val_acc = majority-class fraction).
+        labels = batch["label"].long()
+        out = self.forward(batch)
+        logits = out["logits"]
+        loss = F.cross_entropy(
+            logits, labels,
+            weight=self.class_weights,
+            label_smoothing=self.hparams.label_smoothing,
+        )
+        with torch.no_grad():
+            preds = logits.argmax(dim=-1)
+            acc = (preds == labels).float().mean()
+        bs = labels.shape[0]
+        self.log("val/loss", loss, prog_bar=True, batch_size=bs)
+        self.log("val/acc", acc, prog_bar=True, batch_size=bs)
+        if not hasattr(self, "_val_outputs"):
+            self._val_outputs = []
+        self._val_outputs.append({
+            "labels": labels.detach().cpu(),
+            "preds": preds.detach().cpu(),
+        })
+        return loss
+
+    def on_validation_epoch_end(self):
+        if not getattr(self, "_val_outputs", None):
+            return
+        labels = torch.cat([d["labels"] for d in self._val_outputs])
+        preds = torch.cat([d["preds"] for d in self._val_outputs])
+        n_classes = int(self.hparams.n_classes)
+        f1s = []
+        for c in range(n_classes):
+            tp = ((preds == c) & (labels == c)).sum().item()
+            fp = ((preds == c) & (labels != c)).sum().item()
+            fn = ((preds != c) & (labels == c)).sum().item()
+            denom = (2 * tp + fp + fn)
+            f1s.append(2 * tp / denom if denom > 0 else 0.0)
+        macro_f1 = sum(f1s) / max(n_classes, 1)
+        self.log("val/macro_f1", macro_f1, prog_bar=True)
+        self._val_outputs = []
 
     def test_step(self, batch, batch_idx):
         # Same scalar metrics, plus stash predictions for downstream analysis.

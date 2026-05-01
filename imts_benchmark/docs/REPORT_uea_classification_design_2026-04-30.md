@@ -1,8 +1,14 @@
 # UEA Classification Design & HPO Plan (Mamba-MV)
 
-Date: 2026-04-30
+Date: 2026-04-30 (v1) / 2026-05-01 (v2 addendum)
 Scope: NeurIPS 2026 add-on table — Mamba-MV vs. RoMAE Table 4 baselines on five
 irregularized UEA classification datasets.
+
+**Status.** v1 pipeline executed end-to-end. Headline: BM=1.0 across 3 seeds
+(beats every RoMAE Table 4 baseline). HB and LSST trailed; HB exhibited
+**majority-class collapse** (val_acc identical across 3 seeds, macro_f1=0.42).
+Diagnosis traced to two interacting bugs: *picker-metric mismatch* on imbalanced
+data + *LR grid* not data-aware. v2 addresses both. See §6.
 
 ---
 
@@ -146,7 +152,116 @@ parallel queue.
 
 ---
 
-## 5. SLURM pipeline
+## 5. v2 addendum (2026-05-01) — protocol fixes
+
+### 5.1 What v1 got wrong
+
+1. **Picker metric on imbalanced data.** Aggregator selected by best val/acc.
+   For binary HB (~60/40 imbalance), a model collapsed to majority-class
+   prediction scores val_acc ≈ 0.72 (the majority fraction) — *higher* than a
+   slightly-wrong actual learner. Result: aggregator picked the **collapsed**
+   `replace × LR=3e-3` cell as the HB winner. All 3 final seeds inherited it
+   and produced identical test_acc=0.722 with macro_f1=0.42 (the constant-
+   predictor signature).
+2. **LR grid not data-aware.** `{3e-4, 1e-3, 3e-3}` was wrong on both ends:
+   too high for HB (caused the collapse), too low for LSST (RoMAE used 3e-2;
+   our cap was an order of magnitude lower).
+3. **batch_size not swept.** Inherited from RoMAE Table 12 (BS values tuned for
+   SGD+momentum); unjustified import under our AdamW recipe.
+4. **No head regularization.** RoMAE Table 12 prescribes `dropout=0.2 +
+   stochastic_depth=0.2` on EP and LSST (the overfit-prone cells); we used
+   neither.
+
+### 5.2 What v2 changes
+
+**Aggregator** ([eval/aggregate_uea_hpo.py](../eval/aggregate_uea_hpo.py)):
+- Per-dataset picker metric: `val/macro_f1` for HB, EP, LSST (imbalanced);
+  `val/acc` for BM, CT (balanced).
+- **Collapse detector**: any cell with
+  `val_acc − val_macro_f1 > 0.2` is logged to stderr and excluded from the
+  selection pool. Catches majority-class collapse regardless of which metric
+  is the primary picker.
+- Records `batch_size` and `head_dropout` in `winner_configs.json` so the
+  final-eval array can replay the full picked config.
+
+**Classification head** ([mamba_mv/classification_head.py](../mamba_mv/classification_head.py)):
+- New `head_dropout: float = 0.0` arg. A `nn.Dropout(p)` layer sits between
+  `LayerNorm(z)` and `Linear` when `p > 0`. No other architectural change —
+  pooling order (time-within-variate, then variate, then linear) is unchanged.
+
+**Validation logging** ([mamba_mv/multivariate_classifier.py](../mamba_mv/multivariate_classifier.py)):
+- `validation_step` now stashes `(labels, preds)`; `on_validation_epoch_end`
+  computes and logs `val/macro_f1`. `train_cls.py` captures it into
+  `summary.json`.
+
+**Per-dataset config** ([mamba_mv/train_cls.py](../mamba_mv/train_cls.py),
+`ROMAE_DATASET_DEFAULTS`):
+
+| Dataset | head_dropout | rationale |
+|---|---|---|
+| BasicMotions | 0.0 | already saturated; v2 excludes BM from rerun |
+| CharacterTrajectories | 0.0 | RoMAE Table 12 also uses 0 for CT |
+| Epilepsy | **0.2** | matches RoMAE Table 12 |
+| Heartbeat | 0.0 | RoMAE Table 12 uses 0 for HB |
+| LSST | **0.2** | matches RoMAE Table 12 |
+
+### 5.3 v2 HPO grid (4 datasets, BM excluded)
+
+| Dataset | LR grid (v2) | BS grid (v2) | picker (v2) |
+|---|---|---|---|
+| CharacterTrajectories | {3e-4, 1e-3, 3e-3}    | {8, 16, 32} | val/acc |
+| Epilepsy              | {3e-4, 1e-3, 3e-3}    | {8, 16, 32} | **val/macro_f1** |
+| Heartbeat             | **{1e-4, 3e-4, 1e-3}**  | {8, 16, 32} | **val/macro_f1** |
+| LSST                  | **{1e-3, 3e-3, 1e-2}** | {8, 16, 32} | **val/macro_f1** |
+
+Bold = changed from v1. HB shifted **down** (avoid collapse-prone region);
+LSST shifted **up** (RoMAE used 3e-2 with SGD; under AdamW we map roughly to
+1e-2 ceiling).
+
+**Grid size.** 4 ds × 2 dt × 3 LR × 3 BS × 1 HPO seed = **72 cells**.
+**Final eval.** 4 ds × 2 dt × 3 seeds = **24 cells**.
+**Compute envelope.** ~73 GPU-hours total, ~2 days end-to-end with parallel
+queue.
+
+### 5.4 v2 SLURM artifacts
+
+```
+imts_benchmark/scripts/run_uea_cls_hpo_v2.sbatch         # 72-cell HPO array
+imts_benchmark/scripts/run_aggregate_uea_hpo_v2.sbatch   # CPU aggregator
+imts_benchmark/scripts/run_uea_cls_final_v2.sbatch       # 24-cell final array
+imts_benchmark/scripts/submit_uea_cls_pipeline_v2.sh     # chained submitter
+```
+
+Output root for v2: `output/log/imts_benchmark_v2/uea_cls_v2/` (separate from
+v1 `uea_cls/` so results don't collide).
+
+### 5.5 What v2 does NOT change (deliberately)
+
+- **Pooling order** in the head. Still time-within-variate → variate → linear.
+  v1 results show this is sufficient for BM/CT/EP; the trouble cells are
+  protocol bugs, not capacity bugs. Head-architecture redesign is gated on
+  whether v2 closes the HB/LSST gap.
+- **No pre-training.** Still train-from-scratch with AdamW. RoMAE pre-trains;
+  we do not. The paper write-up will continue to flag this protocol asymmetry.
+- **`max_epochs = 800, patience = 50`** unchanged. RoMAE uses per-dataset
+  epochs (15–150). The longer schedule is more conservative; with EarlyStopping
+  the realized epochs are usually well below 800.
+
+### 5.6 Decision tree after v2
+
+If v2 closes HB/LSST gap → ship the table, write up the protocol-asymmetry
+caveat. No more head changes for the paper.
+
+If v2 still trails on HB/LSST → escalate to head-architecture work:
+- multi-query attention pool (cheapest upgrade)
+- joint K·V single-query pool (test whether the two-stage decomposition is
+  the limit)
+- full QKV self-attention with [CLS] readout (RoMAE-style head; most
+  expensive, only if cheaper variants plateau)
+
+---
+
+## 6. SLURM pipeline (v1)
 
 Three chained array jobs under `imts_benchmark/scripts/`:
 
@@ -166,7 +281,7 @@ in `hpo/<dataset>/<dt_mode>/lr<LR>/hpo/summary.json` and
 
 ---
 
-## 6. Status (2026-04-30)
+## 7. Status (2026-04-30, v1 results)
 
 - Smoke runs done: BasicMotions val=1.0/test=0.95, Heartbeat val=0.725/test=0.61.
 - Pipeline submitted: HPO=6829456, Aggregator=6829457, Final=6829459.

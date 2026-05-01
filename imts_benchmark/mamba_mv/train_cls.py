@@ -1,13 +1,15 @@
 """Train Mamba-MV classifier on UEA datasets with Kidger 30% sync drop.
 
 Entry point for both smoke runs and HPO array tasks. Per-dataset defaults
-(batch size, label smoothing, grad clip) are inherited from RoMAE Table 12;
-LR and dropout are CLI args because they're the swept axes.
+(batch_size, label_smoothing, grad_clip, grid_K, head_dropout) are
+inherited from RoMAE Table 12; LR and batch_size are typically the swept
+axes for v2 HPO. Per-dataset defaults still apply when the corresponding
+CLI flag is left at its sentinel ``-1``.
 
 Example:
     python -m imts_benchmark.mamba_mv.train_cls \
         --dataset BasicMotions --data_root <data_root> \
-        --dt_mode replace --lr 1e-3 --head_dropout 0.1 --seed 42
+        --dt_mode replace --lr 1e-3 --batch_size 16 --seed 42
 """
 
 from __future__ import annotations
@@ -43,11 +45,11 @@ from imts_benchmark.shared_data.uea_classification_datamodule import (
 # RoMAE c values: BM=1.0, CT=0.9, EP=0.8, HB=1.0, LSST=0.9
 # PyTorch p:      BM=0.0, CT=0.1, EP=0.2, HB=0.0, LSST=0.1
 ROMAE_DATASET_DEFAULTS = {
-    "BasicMotions":          {"batch_size": 8,  "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 128},
-    "CharacterTrajectories": {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128},
-    "Epilepsy":              {"batch_size": 16, "label_smoothing": 0.2, "grad_clip": 1.0,  "grid_K": 128},
-    "Heartbeat":             {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 2.0,  "grid_K": 128},
-    "LSST":                  {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 10.0, "grid_K": 64},
+    "BasicMotions":          {"batch_size": 8,  "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "CharacterTrajectories": {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "Epilepsy":              {"batch_size": 16, "label_smoothing": 0.2, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
+    "Heartbeat":             {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 2.0,  "grid_K": 128, "head_dropout": 0.0},
+    "LSST":                  {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 10.0, "grid_K": 64,  "head_dropout": 0.2},
 }
 
 
@@ -82,6 +84,8 @@ def parse_args():
     p.add_argument("--head_use_avail_mask", type=int, default=1)
     # grid_K override (else inherit from ROMAE_DATASET_DEFAULTS).
     p.add_argument("--grid_K", type=int, default=-1)
+    # head_dropout override (sentinel -1.0 means "use per-dataset default").
+    p.add_argument("--head_dropout", type=float, default=-1.0)
 
     # Optimization.
     p.add_argument("--lr", type=float, default=1e-3)
@@ -123,6 +127,8 @@ def main():
         args.grad_clip = defaults["grad_clip"]
     if args.grid_K < 0:
         args.grid_K = defaults["grid_K"]
+    if args.head_dropout < 0:
+        args.head_dropout = defaults["head_dropout"]
 
     if args.smoke:
         args.max_epochs = min(args.max_epochs, 30)
@@ -131,7 +137,8 @@ def main():
     pl.seed_everything(args.seed, workers=True)
 
     run_name = args.run_name or (
-        f"{args.dataset}_{args.dt_mode}_lr{args.lr}_drop{args.head_dropout}_seed{args.seed}"
+        f"{args.dataset}_{args.dt_mode}_lr{args.lr}_bs{args.batch_size}"
+        f"_drop{args.head_dropout}_seed{args.seed}"
     )
     out_dir = Path(args.output_dir) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +180,7 @@ def main():
         t_max=1.0,
         n_freq=args.n_freq,
         head_use_avail_mask=bool(args.head_use_avail_mask),
+        head_dropout=args.head_dropout,
         lr=args.lr,
         weight_decay=args.weight_decay,
         num_warmup_steps=num_warmup_steps,
@@ -213,9 +221,13 @@ def main():
     trainer.fit(model, datamodule=dm)
     fit_time = time.time() - t0
 
-    # Best val accuracy as the model-selection metric.
+    # Final-epoch val metrics, used by the v2 aggregator. We capture both
+    # acc and macro_f1; the picker may use either (collapse detection compares
+    # them).
     best_val_acc = float(trainer.callback_metrics.get("val/acc", torch.tensor(0.0)).item())
-    print(f"[done] best val/acc={best_val_acc:.4f}, fit_time={fit_time:.1f}s")
+    val_macro_f1 = float(trainer.callback_metrics.get("val/macro_f1", torch.tensor(0.0)).item())
+    print(f"[done] val/acc={best_val_acc:.4f}, val/macro_f1={val_macro_f1:.4f}, "
+          f"fit_time={fit_time:.1f}s")
 
     # Test eval.
     test_metrics = trainer.test(model, datamodule=dm)[0]
@@ -233,10 +245,12 @@ def main():
         label_smoothing=args.label_smoothing,
         grad_clip=args.grad_clip,
         grid_K=args.grid_K,
+        head_dropout=args.head_dropout,
         n_vars=dm.n_vars,
         n_classes=dm.n_classes,
         n_params=n_params,
         best_val_acc=best_val_acc,
+        val_macro_f1=val_macro_f1,
         test_acc=test_acc,
         macro_f1=macro_f1,
         fit_time=fit_time,

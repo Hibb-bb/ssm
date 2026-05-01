@@ -32,6 +32,7 @@ class ClassificationHead(nn.Module):
         d_model: int,
         n_classes: int,
         use_avail_mask: bool = True,
+        head_dropout: float = 0.0,
     ):
         super().__init__()
         self.d_model = d_model
@@ -50,8 +51,11 @@ class ClassificationHead(nn.Module):
         # Learnable query for variate-axis attention pool.
         self.q_v = nn.Parameter(torch.randn(d_model) / self._scale)
 
-        # Final classifier: LN -> Linear.
+        # Final classifier: LN -> (optional Dropout) -> Linear.
+        # Dropout sits between LN_out and the linear classifier, mirroring
+        # RoMAE Table 12 where dropout=0.2 is enabled on EP and LSST only.
         self.ln_out = nn.LayerNorm(d_model)
+        self.head_dropout = nn.Dropout(head_dropout) if head_dropout > 0.0 else nn.Identity()
         self.classifier = nn.Linear(d_model, n_classes)
 
     def forward(
@@ -86,5 +90,6 @@ class ClassificationHead(nn.Module):
 
         # ---- Step 3: classify ----
         z_norm = self.ln_out(z)
-        logits = self.classifier(z_norm)                          # [B, C]
+        z_drop = self.head_dropout(z_norm)
+        logits = self.classifier(z_drop)                          # [B, C]
         return z, logits
