@@ -57,7 +57,7 @@ MULTISIN_REGIMES = (
     "multisin_med_irreg",
     "multisin_high_irreg",
 )
-REAL_REGIMES = ("physionet", "activity", "ushcn")
+REAL_REGIMES = ("physionet", "activity", "ushcn", "mimic")
 REGIMES = (*MULTISIN_REGIMES, *REAL_REGIMES)
 
 

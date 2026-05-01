@@ -33,6 +33,10 @@ PAPER = {
                   "mse_disp": "MSE×10⁻³", "mae_disp": "MAE×10⁻²"},
     "ushcn":     {"mse": 5.00e-1, "mae": 3.08e-1, "ms": 1e-1, "as": 1e-1,
                   "mse_disp": "MSE×10⁻¹", "mae_disp": "MAE×10⁻¹"},
+    # MIMIC anchor: t-PatchGNN ICML 2024 Table 1, MSE×10⁻² and MAE×10⁻²
+    # (note: different MSE display scale from PhysioNet's ×10⁻³).
+    "mimic":     {"mse": 1.69e-2, "mae": 7.22e-2, "ms": 1e-2, "as": 1e-2,
+                  "mse_disp": "MSE×10⁻²", "mae_disp": "MAE×10⁻²"},
 }
 
 DATASETS = tuple(PAPER.keys())
@@ -45,15 +49,18 @@ SOURCES = [
     ("Mamba-MV", "replace", "mamba_mv_p10",
                  lambda ds: {"activity":  ["replace_lr-2e-3_bs-128"],
                              "ushcn":     ["replace_lr-5e-4_bs-64"],
-                             "physionet": ["replace_lr-2e-3_bs-8x16"]}.get(ds, [])),
+                             "physionet": ["replace_lr-2e-3_bs-8x16"],
+                             "mimic":     ["replace_lr-2e-3_bs-8_accum-16"]}.get(ds, [])),
     ("Mamba-MV", "learned", "mamba_mv_p10",
                  lambda ds: {"activity":  ["learned_lr-2e-3_bs-128"],
                              "ushcn":     ["learned_lr-1e-4_bs-256"],
-                             "physionet": ["learned_lr-2e-3_bs-8x8"]}.get(ds, [])),
+                             "physionet": ["learned_lr-2e-3_bs-8x8"],
+                             "mimic":     ["learned_lr-2e-3_bs-4_accum-16"]}.get(ds, [])),
     ("Mamba-MV", "concat",  "mamba_mv_p10",
                  lambda ds: {"activity":  ["concat_lr-5e-4_bs-128"],
                              "ushcn":     ["concat_lr-1e-4_bs-256"],
-                             "physionet": ["concat_lr-2e-3_bs-16_accum-4"]}.get(ds, [])),
+                             "physionet": ["concat_lr-2e-3_bs-16_accum-4"],
+                             "mimic":     ["concat_lr-2e-3_bs-4_accum-16"]}.get(ds, [])),
     ("Mamba-RoPE", "learned", "mamba_rope_p10",
                  lambda ds: {"ushcn":     ["learned_lr-5e-4_bs-64"],
                              "physionet": ["learned_lr-2e-3_bs-8_accum-8"]}.get(ds, [])),
