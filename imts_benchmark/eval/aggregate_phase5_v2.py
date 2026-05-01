@@ -54,6 +54,9 @@ SOURCES = [
                  lambda ds: {"activity":  ["concat_lr-5e-4_bs-128"],
                              "ushcn":     ["concat_lr-1e-4_bs-256"],
                              "physionet": ["concat_lr-2e-3_bs-16_accum-4"]}.get(ds, [])),
+    ("Mamba-RoPE", "learned", "mamba_rope_p10",
+                 lambda ds: {"ushcn":     ["learned_lr-5e-4_bs-64"],
+                             "physionet": ["learned_lr-2e-3_bs-8_accum-8"]}.get(ds, [])),
 ]
 
 
@@ -112,10 +115,52 @@ def write_csv(rows, path):
 
 def write_markdown(rows, path):
     """Markdown table comparing both metric formulas, per dataset."""
-    lines = ["# Phase-5 consolidated results (both metric formulas)\n",
-             "Aggregated from p10 (5 seeds, patience=10) re-runs after metric fix.\n",
-             "- `MSE` / `MAE` — target-weighted (Σ SS / Σ count)",
-             "- `MSE_tpg` / `MAE_tpg` — variable-averaged ((1/V) Σ SS_d/count_d), matches T-PatchGNN paper convention\n"]
+    lines = [
+        "# Phase-5 consolidated results (both metric formulas)\n",
+        "## How this file was built\n",
+        "**Auto-generated** by `imts_benchmark/eval/aggregate_phase5_v2.py`. To regenerate after new",
+        "per-seed runs land:",
+        "```bash",
+        "${MAMBA_ENV}/bin/python -m imts_benchmark.eval.aggregate_phase5_v2",
+        "```",
+        "Manual edits to this file will be overwritten on next run — edit the docstring/`write_markdown`",
+        "in the aggregator instead.\n",
+        "**Inputs.** Per-seed `test_metrics.csv` files written by each trainer at",
+        "`mamba_mv.train_mv` / `mamba_rope.train_mamba_rope` / `s5_forecaster.train_s5` /",
+        "`romae_forecaster.train_romae`. The aggregator walks `output/log/imts_benchmark_v2_real/",
+        "<top_dir>/<dataset>/<variant_dir>/seed*/test_metrics.csv` for the (model, variant, dataset)",
+        "tuples listed in the `SOURCES` dict at the top of the script. Add a row there to include",
+        "a new model/variant in this report; missing per-seed dirs are silently skipped.\n",
+        "**Methodology.** All bottom-block runs use `patience=10` early-stopping on `val/MSE` (the",
+        "checkpoint with lowest val/MSE is loaded for test). 5 seeds (1-5) per cell. Hyperparameters",
+        "are HPO winners from `hpo_mamba_*` sweeps (val/MSE-best of a 9- to 27-cell `lr × eff_bs ×",
+        "dt_mode` grid at seed=1, then locked for the 5-seed confirm). The `SOURCES` dict in the",
+        "aggregator names the winning `lr-X_bs-Y[_accum-Z]` directory per (model, variant, dataset).\n",
+        "**Metrics.**",
+        "- `MSE` / `MAE` (\"ours, target-weighted\"): aggregated as `Σ_n SS / Σ_n count` across all",
+        "  test samples — every prediction contributes equally regardless of sample size.",
+        "- `MSE_tpg` / `MAE_tpg` (**T-PatchGNN convention**): per-sample `(1/V_avail) Σ_d (1/N_d)",
+        "  Σ_n (y_dn − ŷ_dn)²` — each variate weighted equally per sample, then averaged across",
+        "  samples. **This is the headline metric** because it matches the published T-PatchGNN",
+        "  paper (Zhang et al., ICML 2024, Table 1) and lets us cite directly against their numbers.",
+        "- `R²` is per-variable global R² (`shared_config/global_metrics.py`), not the older",
+        "  per-sample R² that collapsed on USHCN's near-constant variates. Strongly negative R²",
+        "  on PhysioNet/USHCN reflects pathological variance ratios on a few rare-event variates,",
+        "  not model failure — see `docs/r2_pathology.md` (if present) for details.\n",
+        "**Scaling.** PhysioNet/Activity report `MSE×10⁻³` and `MAE×10⁻²` to match the paper's",
+        "table-1 scale; USHCN reports `MSE×10⁻¹` and `MAE×10⁻¹` because USHCN values are not",
+        "normalised to [0,1] (T-PatchGNN convention; see `convert_tpatchgnn_data.py:298`).\n",
+        "**Per-dataset HPO winners (locked in `SOURCES`):**\n",
+        "| Model | Variant | PhysioNet | Activity | USHCN |",
+        "|---|---|---|---|---|",
+        "| S5 | default | fair-defaults | fair-defaults | fair-defaults |",
+        "| RoMAE | default | fair-defaults | fair-defaults | fair-defaults |",
+        "| Mamba-MV | replace | lr=2e-3, eff_bs=128 (8×16) | lr=2e-3, bs=128 | lr=5e-4, bs=64 |",
+        "| Mamba-MV | learned | lr=2e-3, eff_bs=64 (8×8)  | lr=2e-3, bs=128 | lr=1e-4, bs=256 |",
+        "| Mamba-MV | concat  | lr=2e-3, eff_bs=64 (16×4) | lr=5e-4, bs=128 | lr=1e-4, bs=256 |",
+        "| Mamba-RoPE | learned | lr=2e-3, eff_bs=64 (8×8) | (not run) | lr=5e-4, bs=64 |",
+        "\nAll Mamba-MV runs use `grid_K=256` for PhysioNet, `grid_K=128` for Activity/USHCN.\n",
+    ]
     for ds in DATASETS:
         cfg = PAPER[ds]
         lines.append(f"\n## {ds.upper()} ({cfg['mse_disp']} / {cfg['mae_disp']})\n")

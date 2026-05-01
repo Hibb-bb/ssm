@@ -2,10 +2,15 @@
 
 ## Current (active)
 
+### Forecasting track
 - **[`REPORT_consolidated_2026-04-22.md`](REPORT_consolidated_2026-04-22.md)** — single source of truth for paper writing. Covers Phases 2 / 3 / 4-1 / 4-2, baseline wrappers (Mamba-MV, S5, RoMAE), mTAN drop, ContiFormer deferral, fairness recipe, evaluation methodology, SLURM infrastructure. See the **Addendum 2026-04-24** at the bottom for Audit C, HPO submission, `concat` dt_mode, and per-phase winner strategy.
 - **[`HPO_PLAN.md`](HPO_PLAN.md)** — v2 (mechanism-informed, 2026-04-23). Supersedes v1 (archived). **HPO pipeline submitted 2026-04-24** (6-job SLURM dependency chain, results pending).
 - **[`../audit/AUDIT_C_gamma_rho.md`](../audit/AUDIT_C_gamma_rho.md)** — Empirical refutation of the "shared-grid decay is the bottleneck" hypothesis. Trained `γ` stays at init; implied decay ≈ 0.997. Bottleneck attribution shifts to per-variate SSM capacity.
 - **[`../knowledge/README.md`](../knowledge/README.md)** — reference papers + summary stubs (S5, RoMAE, Mamba, our draft). Use these to ground paper citations.
+
+### Classification track (UEA, added 2026-04-30)
+- **[`REPORT_uea_classification_design_2026-04-30.md`](REPORT_uea_classification_design_2026-04-30.md)** — locked design + HPO plan for the UEA add-on table (5 datasets × 2 dt_modes × 3 LRs HPO → aggregator → 3-seed final). Hierarchical single-query attention-pool head (HAN-style; no dropout), AdamW + cosine, max_epochs=800/patience=50, RoMAE Table 12 per-dataset HPs.
+- Pipeline: `scripts/{run_uea_cls_hpo,run_aggregate_uea_hpo,run_uea_cls_final}.sbatch` chained by `scripts/submit_uea_cls_pipeline.sh`. Results land at `output/log/imts_benchmark_v2/uea_cls/{hpo,final}/`.
 
 ## Baseline specs (active)
 
@@ -60,3 +65,6 @@ Old reports kept for provenance but not cited in the paper. All content still re
 - `../audit/archive/baseline_spec_mtan.md` — mTAN dropped after Phase-2 collapse
 - `../audit/archive/baseline_spec_contiformer.md` — ContiFormer deferred after 6-config OOM
 - `../audit/archive/contiformer_deferral_note.md` — decision ledger
+
+**Legacy classification-head figure** (`archive/figures_legacy_mlpgate/`):
+- Files render the pre-2026-04-30 MLP-gate + Dropout head (now replaced by single-query attention pools). Kept for provenance; not cited in the paper. See the folder's README for the diff.
