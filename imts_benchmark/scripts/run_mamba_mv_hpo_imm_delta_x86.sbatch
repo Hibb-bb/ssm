@@ -8,25 +8,23 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --partition=gpuH200x8
 #SBATCH --time=04:00:00
-#SBATCH --array=1-27
+#SBATCH --array=1-9
 #SBATCH --output=/projects/bfrf/seojininus/ssm/output/log/imts_benchmark_v2_imm/hpo_mamba_mv_%x/slurm_%A_%a.out
 #SBATCH --error=/projects/bfrf/seojininus/ssm/output/log/imts_benchmark_v2_imm/hpo_mamba_mv_%x/slurm_%A_%a.err
 #SBATCH --mail-user=dhjrzzang@gmail.com
 #SBATCH --mail-type=END,FAIL
 
-# Mamba-MV HPO sweep on a TIME-IMM regime, parameterized by DS_NAME env var.
-# Mirrors run_mamba_mv_hpo_physionet_delta_x86.sbatch (3 lr x 3 eff_bs x 3 dt_mode = 27 cells).
+# Mamba-MV HPO sweep on a TIME-IMM regime (lean design, 9 cells per dataset).
+# 3 lr x 3 dt_mode at fixed eff_bs=128 (median of Phase-5 grid).
+# Total compute: 8 datasets * 9 cells = 72 sweep runs.
+#
+# Selection: val/MSE-best per dt_mode (3 winners per dataset).
+# Confirm: 3 seeds * 3 dt_modes per dataset = 72 confirm runs.
 #
 # Usage:
-#   sbatch --export=ALL,DS_NAME=imm_fnspid,EFF_BS_OVERRIDE='' \
+#   sbatch --export=ALL,DS_NAME=imm_fnspid \
 #       --job-name=mv_hpo_${DS_NAME} \
 #       imts_benchmark/scripts/run_mamba_mv_hpo_imm_delta_x86.sbatch
-#
-# The ${LOG_BASE} dir uses ${SLURM_JOB_NAME} (set via --job-name) so different
-# datasets land in separate log subdirs.
-#
-# For tiny datasets (CESNET ~23 train rows, ILINet ~85), pass smaller eff_bs:
-#   EFF_BS_OVERRIDE="8 16 32"   # uses phys_bs=8/16/32 with accum=1
 
 set -uo pipefail
 
@@ -57,43 +55,21 @@ else
     export WANDB_MODE=online
 fi
 
+# 9-cell grid: lr x dt_mode at fixed eff_bs=128
 DT_MODES=(replace learned concat)
-LRS=(1e-4 5e-4 2e-3)
-
-# Default eff_bs grid (matches PhysioNet sweep). Override for tiny datasets.
-if [[ -n "${EFF_BS_OVERRIDE:-}" ]]; then
-    read -ra EFF_BS_ARR <<< "${EFF_BS_OVERRIDE}"
-else
-    EFF_BS_ARR=(64 128 256)
-fi
-
-if [[ ${#EFF_BS_ARR[@]} -ne 3 ]]; then
-    echo "ERROR: EFF_BS_OVERRIDE must contain exactly 3 values, got: ${EFF_BS_ARR[*]}" >&2
-    exit 1
-fi
-
+LRS=(1e-4 5e-4 1e-3)
+EBS=128
+PHYS_BS=32
+ACCUM=4
 GRID_K=256
 
 TASK_ID=$SLURM_ARRAY_TASK_ID
 K=$(( TASK_ID - 1 ))
-DT_IDX=$(( K / 9 ))
-LR_IDX=$(( (K % 9) / 3 ))
-EBS_IDX=$(( K % 3 ))
+DT_IDX=$(( K / 3 ))
+LR_IDX=$(( K % 3 ))
 
 DT_MODE=${DT_MODES[$DT_IDX]}
 LR=${LRS[$LR_IDX]}
-EBS=${EFF_BS_ARR[$EBS_IDX]}
-
-# eff_bs -> (phys_bs, accum). Two policies depending on EBS magnitude.
-case $EBS in
-    8)   PHYS_BS=8;  ACCUM=1 ;;
-    16)  PHYS_BS=16; ACCUM=1 ;;
-    32)  PHYS_BS=32; ACCUM=1 ;;
-    64)  PHYS_BS=16; ACCUM=4 ;;
-    128) PHYS_BS=32; ACCUM=4 ;;
-    256) PHYS_BS=32; ACCUM=8 ;;
-    *) echo "Unknown EBS=$EBS" >&2; exit 1 ;;
-esac
 
 CELL_TAG="lr-${LR}_ebs-${EBS}"
 OUTPUT_DIR=${LOG_BASE}/hpo_mamba_mv_${DS_NAME}/${DT_MODE}/${CELL_TAG}/seed1
@@ -102,7 +78,7 @@ export WANDB_DIR="${OUTPUT_DIR}"
 
 echo "=========================================="
 echo "Mamba-MV IMM HPO  ds=$DS_NAME  dt=$DT_MODE  lr=$LR  ebs=$EBS (phys=${PHYS_BS} accum=${ACCUM})  grid_K=$GRID_K  seed=1"
-echo "Job: $SLURM_JOB_ID  Array: $SLURM_ARRAY_TASK_ID"
+echo "Job: $SLURM_JOB_ID  Array: $SLURM_ARRAY_TASK_ID  cell ${TASK_ID}/9"
 echo "host: $(hostname)"
 nvidia-smi --query-gpu=name --format=csv,noheader
 echo "Time: $(date)"
