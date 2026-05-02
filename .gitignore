@@ -17,6 +17,9 @@ imts_benchmark/data/imm_tsf_sparse/
 # Pretraining runs (ckpts, csv logs, wandb subdirs, profiler dumps).
 imts_benchmark/pretrain/runs/
 
+# Time-IMM dataset binaries (HF format; ~19 MB; download via converter)
+time_imm_data/
+
 # Weights & Biases (offline runs)
 /wandb/
 **/wandb/
