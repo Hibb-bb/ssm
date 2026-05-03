@@ -1,0 +1,47 @@
+% UEA classification results table — NeurIPS style.
+% Top block: RoMAE Table 4 baselines (3-seed mean, no std published).
+% Middle block: supervised Mamba-MV (3-seed mean +/- std, patience=50, max_epochs=800).
+% Bottom block: Mamba-MV-pretrain (3-seed mean +/- std, patience=10, max_epochs=200).
+% Required: \usepackage{booktabs}
+
+\begin{table}[t]
+\caption{UEA multivariate classification accuracy on five datasets under
+the Kidger 30\% sync-drop protocol~\citep{kidger2020ncde}, mean$_{\pm\text{std}}$
+over 3 seeds. \emph{Top block}: RoMAE Table~4 baselines~\citep{zivanovic2025rotary}
+(3-seed mean, no std reported). \emph{Middle block}: supervised Mamba-MV with
+per-variate ID embedding (\texttt{patience=50}, \texttt{max\_epochs=800}); BM uses
+v1 result (saturated). \emph{Bottom block}: Mamba-MV-pretrain with slot-anonymous
+variates and Moirai-style binary attention bias (\texttt{patience=10}, \texttt{max\_epochs=200}),
+classification head identical to supervised. \texttt{dt\_mode} variants:
+\texttt{learned} ($\Delta t$ as positional bias), \texttt{replace} ($\Delta t$
+substitutes Mamba's null-state), \texttt{concat} ($\Delta t$ concatenated to input).
+Picker: \texttt{val/macro\_f1} for HB/EP/LSST, \texttt{val/acc} for BM/CT, with
+collapse-detector exclusion (\texttt{val\_acc $-$ val\_f1 $> 0.2$}).
+\textbf{Bold} = best per column; \underline{underline} = second-best.
+Em-dashes mark cells not run (supervised \texttt{concat} for the v2 re-sweep
+was deferred when we pivoted to the pretrain chain).}
+\label{tab:uea_results}
+\centering
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.05}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Algorithm                        & BM                                       & CT                                       & EP                                       & HB                                       & LSST                                     \\
+\midrule
+TST                              & 0.967                                    & 0.974                                    & 0.959                                    & 0.740                                    & 0.552                                    \\
+mTAN                             & \underline{0.992}                        & 0.953                                    & 0.920                                    & \textbf{0.779}                           & 0.531                                    \\
+S5                               & 0.983                                    & 0.961                                    & 0.907                                    & 0.733                                    & \textbf{0.639}                           \\
+ContiFormer                      & 0.975                                    & \underline{0.983}                        & 0.932                                    & \underline{0.756}                        & 0.600                                    \\
+RoMAE                            & \underline{0.992}                        & \textbf{0.988}                           & 0.952                                    & 0.745                                    & \underline{0.623}                        \\
+\midrule
+Mamba-MV (learned)               & \textbf{1.000}$_{\pm 0.000}$             & 0.975$_{\pm 0.002}$                      & 0.964$_{\pm 0.000}$                      & 0.694$_{\pm 0.038}$                      & 0.407$_{\pm 0.047}$                      \\
+Mamba-MV (replace)               & 0.950$_{\pm 0.066}$                      & 0.969$_{\pm 0.008}$                      & \textbf{0.981}$_{\pm 0.011}$             & 0.689$_{\pm 0.066}$                      & 0.458$_{\pm 0.032}$                      \\
+Mamba-MV (concat)                & ---                                      & ---                                      & ---                                      & ---                                      & ---                                      \\
+\midrule
+Mamba-MV-pretrain (learned)      & 0.925$_{\pm 0.075}$                      & 0.979$_{\pm 0.002}$                      & 0.961$_{\pm 0.015}$                      & 0.646$_{\pm 0.053}$                      & 0.302$_{\pm 0.031}$                      \\
+Mamba-MV-pretrain (replace)      & 0.892$_{\pm 0.038}$                      & 0.977$_{\pm 0.002}$                      & 0.969$_{\pm 0.004}$                      & 0.652$_{\pm 0.058}$                      & 0.295$_{\pm 0.033}$                      \\
+Mamba-MV-pretrain (concat)       & 0.533$_{\pm 0.257}$                      & 0.969$_{\pm 0.016}$                      & 0.973$_{\pm 0.012}$                      & 0.629$_{\pm 0.051}$                      & 0.291$_{\pm 0.060}$                      \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -80,7 +80,7 @@ def parse_args():
     p.add_argument("--expand", type=int, default=2)
     p.add_argument("--n_freq", type=int, default=8)
     p.add_argument("--dt_mode", type=str, default="replace",
-                   choices=["learned", "replace"])
+                   choices=["learned", "replace", "concat"])
     p.add_argument("--head_use_avail_mask", type=int, default=1)
     # grid_K override (else inherit from ROMAE_DATASET_DEFAULTS).
     p.add_argument("--grid_K", type=int, default=-1)
