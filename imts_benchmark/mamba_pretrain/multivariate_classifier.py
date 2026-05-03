@@ -249,6 +249,7 @@ class MultivariateMambaClassifier(pl.LightningModule):
             return
         labels = torch.cat([d["labels"] for d in self._test_outputs])
         preds = torch.cat([d["preds"] for d in self._test_outputs])
+        logits = torch.cat([d["logits"] for d in self._test_outputs])
         n_classes = int(self.hparams.n_classes)
         f1s = []
         for c in range(n_classes):
@@ -261,7 +262,17 @@ class MultivariateMambaClassifier(pl.LightningModule):
         acc = (preds == labels).float().mean().item()
         self.log("test/acc_final", acc)
         self.log("test/macro_f1", macro_f1)
-        self._test_agg = {"acc": acc, "macro_f1": macro_f1}
+        # Stash for train_cls.py to dump alongside summary.json. Cheap on UEA
+        # (a few thousand rows × ~10s of classes); used for confusion matrices
+        # + per-class diagnostics in eval/uea_confusion.py.
+        self._test_agg = {
+            "acc": acc,
+            "macro_f1": macro_f1,
+            "labels": labels.tolist(),
+            "preds": preds.tolist(),
+            "logits": logits.tolist(),
+        }
+        self._test_outputs = []
 
     # -------------------------- optimizer --------------------------
 

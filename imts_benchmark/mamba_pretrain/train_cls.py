@@ -26,6 +26,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor
+from pytorch_lightning.loggers import CSVLogger
 
 _THIS_DIR = Path(__file__).resolve().parent
 _SSM_DK = _THIS_DIR.parents[1]
@@ -33,6 +34,11 @@ if str(_SSM_DK) not in sys.path:
     sys.path.insert(0, str(_SSM_DK))
 
 from imts_benchmark.mamba_pretrain.multivariate_classifier import MultivariateMambaClassifier
+from imts_benchmark.shared_config.wandb_lightning import (
+    build_wandb_logger,
+    log_wandb_after_fit,
+    log_wandb_run_summary,
+)
 from imts_benchmark.shared_data.uea_classification_datamodule import (
     UEAClassificationDataModule,
 )
@@ -53,6 +59,20 @@ ROMAE_DATASET_DEFAULTS = {
 }
 
 
+# Architecture presets. Width-only axis, depth fixed at 3+3 (per the
+# colleague's BIG-vs-SMALL framing on the IMM/PhysioNet runs):
+#     SMALL  d=64   ≈ 259K params   (head-of-table sweet spot from IMM HPO)
+#     BASE   d=256  ≈ 3.5M params   (the historical UEA default we've been running)
+#     BIG    d=384  ≈ 7.8M params   (colleague's BIG)
+# Apply via --model_size; depth/heads/state/conv/expand remain on their
+# individual CLI defaults so this preset only moves width.
+MODEL_SIZE_PRESETS = {
+    "small": {"d_model": 64,  "d_hidden": 64,  "n_perv_layer": 3, "n_fusion_blocks": 3, "n_heads_varattn": 4},
+    "base":  {"d_model": 256, "d_hidden": 256, "n_perv_layer": 3, "n_fusion_blocks": 3, "n_heads_varattn": 4},
+    "big":   {"d_model": 384, "d_hidden": 384, "n_perv_layer": 3, "n_fusion_blocks": 3, "n_heads_varattn": 4},
+}
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Mamba-MV UEA classification")
 
@@ -70,6 +90,12 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=2)
 
     # Architecture.
+    p.add_argument("--model_size", type=str, default="base",
+                   choices=list(MODEL_SIZE_PRESETS.keys()),
+                   help="Apply a preset for d_model/d_hidden/n_perv_layer/"
+                        "n_fusion_blocks/n_heads_varattn. Individual --d_model "
+                        "etc. flags below are ignored unless model_size=base "
+                        "(in which case they are honoured for backward compat).")
     p.add_argument("--d_model", type=int, default=256)
     p.add_argument("--d_hidden", type=int, default=256)
     p.add_argument("--n_perv_layer", type=int, default=3)
@@ -98,6 +124,12 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=-1)
     p.add_argument("--label_smoothing", type=float, default=-1.0)
     p.add_argument("--grad_clip", type=float, default=-1.0)
+    # Loss weighting. Default ON to match prior runs; flip OFF to match RoMAE,
+    # which uses only label_smoothing and no inverse-frequency class weights.
+    p.add_argument("--use_class_weights", type=int, default=1,
+                   choices=[0, 1],
+                   help="If 0, override dm.class_weights with all-ones so the "
+                        "cross-entropy is unweighted (matches RoMAE App. C.2).")
 
     # Run management.
     p.add_argument("--seed", type=int, default=42)
@@ -110,6 +142,17 @@ def parse_args():
                         "under bf16-mixed unless deltat is explicitly cast.")
     p.add_argument("--smoke", action="store_true",
                    help="Smoke mode: small max_epochs and small patience.")
+
+    # Weights & Biases (online cloud logging). We always keep CSVLogger as a
+    # local backup; wandb adds live dashboards under the configured project.
+    p.add_argument("--use_wandb", action="store_true",
+                   help="Stream per-step + per-epoch metrics to wandb.")
+    p.add_argument("--wandb_project", type=str, default="TSKing")
+    p.add_argument("--wandb_entity", type=str, default="magicslabnorthwestern",
+                   help="wandb entity (team / user). The ML lab account.")
+    p.add_argument("--wandb_run_name", type=str, default="",
+                   help="If empty, a descriptive default is generated from "
+                        "dataset/dt_mode/size/seed.")
 
     return p.parse_args()
 
@@ -129,6 +172,14 @@ def main():
         args.grid_K = defaults["grid_K"]
     if args.head_dropout < 0:
         args.head_dropout = defaults["head_dropout"]
+
+    # Apply architecture preset (overrides individual --d_model etc. unless
+    # the user picked the "base" preset, in which case the CLI values stand
+    # so existing scripts don't shift behaviour silently).
+    if args.model_size != "base":
+        preset = MODEL_SIZE_PRESETS[args.model_size]
+        for k, v in preset.items():
+            setattr(args, k, v)
 
     if args.smoke:
         args.max_epochs = min(args.max_epochs, 30)
@@ -163,6 +214,10 @@ def main():
     num_training_steps = max(1, steps_per_epoch * args.max_epochs)
     num_warmup_steps = max(1, int(num_training_steps * args.warmup_pct))
 
+    # Class weights toggle: optionally drop the inverse-frequency weighting so
+    # the loss matches RoMAE App. C.2 (label_smoothing only).
+    cw = dm.class_weights if args.use_class_weights else None
+
     # ---- Model ----
     model = MultivariateMambaClassifier(
         d_model=args.d_model,
@@ -187,7 +242,7 @@ def main():
         num_training_steps=num_training_steps,
         grad_clip=args.grad_clip,
         label_smoothing=args.label_smoothing,
-        class_weights=dm.class_weights,
+        class_weights=cw,
     )
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -199,8 +254,27 @@ def main():
     callbacks = [
         EarlyStopping(monitor="val/acc", mode="max", patience=args.patience),
     ]
-    # LearningRateMonitor requires a logger; skipped for now since smoke and
-    # HPO runs use logger=False. Re-enable when wandb logger is wired in.
+    # CSVLogger writes per-epoch metrics.csv to <output_dir>/<run_name>/csv/
+    # version_0/metrics.csv — used downstream for loss-curve plots / convergence
+    # diagnosis. Lightweight (just a CSV file). Replaces the prior logger=False.
+    csv_logger = CSVLogger(
+        save_dir=str(out_dir),
+        name="csv",
+        flush_logs_every_n_steps=50,
+    )
+
+    # Optional wandb dashboard. Defaults to a descriptive run name so sweeps
+    # are easy to filter in the UI.
+    if args.use_wandb and not args.wandb_run_name:
+        args.wandb_run_name = (
+            f"uea_cls_{args.dataset}_{args.dt_mode}_size{args.model_size}"
+            f"_seed{args.seed}_drop{args.drop_rate}"
+        )
+    wandb_logger = build_wandb_logger(args)
+    loggers = [csv_logger]
+    if wandb_logger is not False:
+        loggers.append(wandb_logger)
+
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -210,7 +284,7 @@ def main():
         callbacks=callbacks,
         deterministic=False,  # Mamba's SSM kernel isn't fully deterministic; cosine schedule + seed cover most.
         log_every_n_steps=10,
-        logger=False,         # smoke runs don't need logging; HPO/final wire wandb separately.
+        logger=loggers,
         enable_checkpointing=False,  # We never load the saved .ckpt; metrics come from
                                      # callback_metrics + immediate trainer.test(). Default
                                      # ckpt path is CWD-relative, and 30 array tasks cd to
@@ -220,6 +294,7 @@ def main():
     t0 = time.time()
     trainer.fit(model, datamodule=dm)
     fit_time = time.time() - t0
+    log_wandb_after_fit(wandb_logger, fit_time, best_val_mse=None)
 
     # Final-epoch val metrics, used by the v2 aggregator. We capture both
     # acc and macro_f1; the picker may use either (collapse detection compares
@@ -246,6 +321,11 @@ def main():
         grad_clip=args.grad_clip,
         grid_K=args.grid_K,
         head_dropout=args.head_dropout,
+        model_size=args.model_size,
+        d_model=args.d_model,
+        n_perv_layer=args.n_perv_layer,
+        n_fusion_blocks=args.n_fusion_blocks,
+        use_class_weights=bool(args.use_class_weights),
         n_vars=dm.n_vars,
         n_classes=dm.n_classes,
         n_params=n_params,
@@ -257,6 +337,30 @@ def main():
     )
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
+    log_wandb_run_summary(wandb_logger, summary)
+
+    # Per-sample test predictions for downstream confusion-matrix /
+    # per-class diagnostics. Read by eval/uea_confusion.py. We pull from the
+    # `_test_agg` dict stashed by the model in on_test_epoch_end. Shape:
+    # one JSON object with parallel labels/preds/logits arrays.
+    agg = getattr(model, "_test_agg", None)
+    if agg and "labels" in agg:
+        preds_path = out_dir / "test_predictions.json"
+        with open(preds_path, "w") as f:
+            json.dump(
+                dict(
+                    dataset=args.dataset,
+                    dt_mode=args.dt_mode,
+                    seed=args.seed,
+                    n_classes=dm.n_classes,
+                    label_to_idx=dm.label_to_idx,
+                    class_weights=dm.class_weights.tolist(),
+                    labels=agg["labels"],
+                    preds=agg["preds"],
+                    logits=agg["logits"],
+                ),
+                f,
+            )
 
 
 if __name__ == "__main__":
