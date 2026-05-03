@@ -454,6 +454,8 @@ class MultivariateMambaForecaster(pl.LightningModule):
         metrics = {
             "mse": agg["mse"],
             "mae": agg["mae"],
+            "mse_tpg": agg["mse_tpg"],
+            "mae_tpg": agg["mae_tpg"],
             "r2": agg["r2"],
             "pearson": agg["pearson"],
             "r2_per_sample_legacy": legacy_r2_per_sample,
