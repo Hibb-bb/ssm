@@ -15,25 +15,28 @@
 #SBATCH --mail-type=END,FAIL
 
 # 30%-drop UEA classification (Kidger / RoMAE Table 4 protocol). Round-1
-# config: SMALL preset only (d=64, ~259K params), per the user's choice to
-# keep round 1 to 45 cells.
+# config: SMALL preset only (d=64, ~259K params).
 #
 # Layout:  5 datasets × 3 dt_modes × 3 seeds = 45 cells.
 #
-# Per-dataset LRs match RoMAE App. C.2 Table 12 (BM=1e-2, CT=8e-3, EP=2e-3,
-# HB=2e-2, LSST=3e-2). Per-dataset batch_size / label_smoothing / grad_clip /
-# head_dropout / grid_K still flow from ROMAE_DATASET_DEFAULTS in
-# train_cls.py (also Table 12). class_weights ON (the historical default).
+# LR = 1e-3 global. The first attempt (job 18016751) used RoMAE Table 12
+# per-dataset LRs (1e-2 - 3e-2), but those are SGD-momentum magnitudes —
+# under AdamW they overshoot, and BM cells produced val_acc bouncing
+# between 0.125 and 0.875 with train_loss never converging. Returning to
+# lr=1e-3 makes this a clean size-only ablation against the historical
+# 30% tree (same LR; only size and patience differ).
 #
-# Patience bumped to 100 (vs prior 10/50) and max_epochs to 800: the existing
+# Per-dataset batch_size / label_smoothing / grad_clip / head_dropout /
+# grid_K still flow from ROMAE_DATASET_DEFAULTS in train_cls.py (Table 12;
+# these are NOT SGD-specific). class_weights ON (historical default).
+#
+# Patience bumped to 100 (vs prior 10) and max_epochs to 800: the existing
 # 30% chain at patience=10 was firing while still on the LR-warmup ramp
-# (BM cells finishing in 4-11s). RoMAE caps epochs per-dataset (15-150);
-# patience=100 lets us reach those caps naturally on the slow datasets.
+# (BM cells finishing in 4-11s).
 #
 # Re-running base (d=256) is intentionally deferred — comparison to the
-# existing 30% tree (`output/log/uea_cls_pretrain/final/`, also d=256 but
-# global lr=1e-3 + patience=10) will be partially confounded by the protocol
-# difference. Acceptable for round 1; if `small` looks promising, run base
+# historical 30% tree will be partially confounded by the patience difference,
+# but the LR confounder is now removed. If `small` looks promising, run base
 # under the new protocol in round 2 to confirm attribution.
 #
 # Index decoding: k = TASK_ID - 1
@@ -63,8 +66,7 @@ DT_MODES=("replace" "learned" "concat")
 # for the head-to-head.
 SEEDS=(0 42 123)
 
-# Per-dataset LRs from RoMAE Table 12 (App. C.2). Indices match DATASETS order.
-LRS=(0.01 0.008 0.002 0.02 0.03)
+LR=0.001  # global; RoMAE Table 12 per-dataset LRs are SGD-magnitudes (don't transfer to AdamW)
 
 SIZE=small
 
@@ -78,7 +80,6 @@ SD_IDX=$(( REM % 3 ))
 DATASET=${DATASETS[$DS_IDX]}
 DT_MODE=${DT_MODES[$DT_IDX]}
 SEED=${SEEDS[$SD_IDX]}
-LR=${LRS[$DS_IDX]}
 
 OUT_DIR=${LOG_BASE}/${SIZE}/${DATASET}/${DT_MODE}/seed${SEED}
 mkdir -p "${OUT_DIR}"
@@ -91,7 +92,7 @@ cd "${CODE_DIR}"
 
 echo "=========================================="
 echo "UEA 30%-drop ROUND 1 (small only): size=${SIZE}  ds=${DATASET}  dt=${DT_MODE}  seed=${SEED}"
-echo "  HP: lr=${LR} (RoMAE Table 12), max_epochs=800, patience=100, drop_rate=0.3, cw=1"
+echo "  HP: lr=${LR} (global, AdamW-tuned), max_epochs=800, patience=100, drop_rate=0.3, cw=1"
 echo "Job: $SLURM_JOB_ID  Array: $SLURM_ARRAY_TASK_ID"
 nvidia-smi --query-gpu=name --format=csv,noheader
 echo "Time: $(date)"

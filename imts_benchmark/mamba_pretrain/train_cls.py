@@ -51,11 +51,37 @@ from imts_benchmark.shared_data.uea_classification_datamodule import (
 # RoMAE c values: BM=1.0, CT=0.9, EP=0.8, HB=1.0, LSST=0.9
 # PyTorch p:      BM=0.0, CT=0.1, EP=0.2, HB=0.0, LSST=0.1
 ROMAE_DATASET_DEFAULTS = {
-    "BasicMotions":          {"batch_size": 8,  "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
-    "CharacterTrajectories": {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
-    "Epilepsy":              {"batch_size": 16, "label_smoothing": 0.2, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
-    "Heartbeat":             {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 2.0,  "grid_K": 128, "head_dropout": 0.0},
-    "LSST":                  {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 10.0, "grid_K": 64,  "head_dropout": 0.2},
+    # The 5 RoMAE Table 12 datasets — exact RoMAE App. C.2 values.
+    "BasicMotions":             {"batch_size": 8,  "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "CharacterTrajectories":    {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "Epilepsy":                 {"batch_size": 16, "label_smoothing": 0.2, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
+    "Heartbeat":                {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 2.0,  "grid_K": 128, "head_dropout": 0.0},
+    "LSST":                     {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 10.0, "grid_K": 64,  "head_dropout": 0.2},
+    # ContiFormer Table 8 datasets without RoMAE Table 12 values. Defaults
+    # picked from ContiFormer Appendix C.2.1 (lr=1e-2 SGD, bs=64, lr=1e-3
+    # AdamW per their actual repo) plus light per-dataset adjustments for
+    # small training-set sizes (smaller bs) and strong overfitting risk
+    # (more head_dropout). label_smoothing=0.1 is the common-default for
+    # multi-class; grid_K=128 for short sequences, smaller for very long.
+    "ArticularyWordRecognition": {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0, "grid_K": 128, "head_dropout": 0.0},
+    "ERing":                    {"batch_size": 8,  "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
+    "FingerMovements":          {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.0},
+    "HandMovementDirection":    {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
+    "Handwriting":              {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.2},
+    "JapaneseVowels":           {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.0},
+    "Libras":                   {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.2},
+    "NATOPS":                   {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.0},
+    "PenDigits":                {"batch_size": 64, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 32,  "head_dropout": 0.0},
+    "RacketSports":             {"batch_size": 16, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.0},
+    "SelfRegulationSCP1":       {"batch_size": 16, "label_smoothing": 0.0, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "SpokenArabicDigits":       {"batch_size": 64, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    "UWaveGestureLibrary":      {"batch_size": 32, "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 128, "head_dropout": 0.0},
+    # High-V datasets: V-axis attention is O(V^2). Keep physical bs=1 and
+    # use --accumulate_grad_batches 16 in the sbatch to recover effective
+    # bs=16. grid_K halved to 64 to roughly keep the [B, K, V, V] tensor
+    # comparable to a normal cell. bf16-mixed precision required.
+    "DuckDuckGeese":            {"batch_size": 1,  "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.2},
+    "PEMS-SF":                  {"batch_size": 1,  "label_smoothing": 0.1, "grad_clip": 1.0,  "grid_K": 64,  "head_dropout": 0.0},
 }
 
 
@@ -124,6 +150,11 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=-1)
     p.add_argument("--label_smoothing", type=float, default=-1.0)
     p.add_argument("--grad_clip", type=float, default=-1.0)
+    # Lets us run high-V datasets (DDG V=1345, PEMS V=963) at physical
+    # batch_size=1 while keeping effective batch_size=16 — the V-axis
+    # attention is O(V^2) in memory so B=1 is the only feasible per-step
+    # config. No-op (=1) for normal datasets.
+    p.add_argument("--accumulate_grad_batches", type=int, default=1)
     # Loss weighting. Default ON to match prior runs; flip OFF to match RoMAE,
     # which uses only label_smoothing and no inverse-frequency class weights.
     p.add_argument("--use_class_weights", type=int, default=1,
@@ -281,6 +312,7 @@ def main():
         devices=1,
         precision=args.precision if torch.cuda.is_available() else 32,
         gradient_clip_val=args.grad_clip,
+        accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=callbacks,
         deterministic=False,  # Mamba's SSM kernel isn't fully deterministic; cosine schedule + seed cover most.
         log_every_n_steps=10,
