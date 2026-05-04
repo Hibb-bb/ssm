@@ -5,6 +5,7 @@ __pycache__/
 # Generated datasets
 /data_correct_async/
 /data_correct/
+/pendulum_data/
 
 # Sweep / training outputs
 /output/
@@ -18,6 +19,7 @@ __pycache__/
 **/_upstream/
 **/_imm_tsf_repo/
 **/_time_imm_repo/
+/_s5_repo/
 
 # Editor / OS
 .vscode/
