@@ -174,8 +174,8 @@ def custom_collate_ELAsTiCC(batch):
 class ELAsTiCCDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        batch_size=32,
-        max_n_per_class=20000,
+        batch_size=16,
+        max_n_per_class=2000,
         num_workers=2,
     ):
         super().__init__()
