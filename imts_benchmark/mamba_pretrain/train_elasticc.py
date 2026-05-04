@@ -175,7 +175,7 @@ class ELAsTiCCDataModule(pl.LightningDataModule):
     def __init__(
         self,
         batch_size=16,
-        max_n_per_class=200,
+        max_n_per_class=None,
         num_workers=2,
     ):
         super().__init__()
