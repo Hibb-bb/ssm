@@ -97,6 +97,13 @@ def reformat_ts_matrix(ts_sample, max_length):
     return final_matrix.T, final_mask.T, times, delta_times
 
 
+def get_weights(labels):
+    counts = np.zeros((len(classes)))
+    for l in labels:
+        counts[classes.index(l)] += 1
+    weights = 1 / counts
+    return torch.from_numpy(weights).float()
+
 
 def custom_collate_ELAsTiCC(batch):
     """
@@ -176,7 +183,6 @@ class ELAsTiCCDataModule(pl.LightningDataModule):
         self.max_n_per_class = max_n_per_class
         self.n_vars = 6
         self.n_classes = 19
-        self.class_weights = torch.ones(self.n_classes)
         self.val_truncation_days = np.array([2000])
         self.num_workers = num_workers
 
@@ -196,6 +202,8 @@ class ELAsTiCCDataModule(pl.LightningDataModule):
             parquet_file_path="/Users/vedshah/Documents/Research/NU-Miller/Projects/Hierarchical-VT/data/ELAsTiCC/test.parquet",
             max_n_per_class=self.max_n_per_class,
         )
+
+        self.class_weights = get_weights(self.train_ds.get_all_labels())
 
 
     def train_dataloader(self):
