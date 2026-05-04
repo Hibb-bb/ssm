@@ -189,17 +189,17 @@ class ELAsTiCCDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
 
         self.train_ds = ELAsTiCC_LC_Dataset(
-            parquet_file_path="/Users/vedshah/Documents/Research/NU-Miller/Projects/Hierarchical-VT/data/ELAsTiCC/train.parquet",
+            parquet_file_path="/gpfs/projects/b1094/ved/code/Hierarchical-VT/data/ELAsTiCC/train.parquet",
             max_n_per_class=self.max_n_per_class,
         )
 
         self.val_ds = ELAsTiCC_LC_Dataset(
-            parquet_file_path="/Users/vedshah/Documents/Research/NU-Miller/Projects/Hierarchical-VT/data/ELAsTiCC/val.parquet",
+            parquet_file_path="/gpfs/projects/b1094/ved/code/Hierarchical-VT/data/ELAsTiCC/val.parquet",
             max_n_per_class=self.max_n_per_class,
         )
 
         self.test_ds = ELAsTiCC_LC_Dataset(
-            parquet_file_path="/Users/vedshah/Documents/Research/NU-Miller/Projects/Hierarchical-VT/data/ELAsTiCC/test.parquet",
+            parquet_file_path="/gpfs/projects/b1094/ved/code/Hierarchical-VT/data/ELAsTiCC/test.parquet",
             max_n_per_class=self.max_n_per_class,
         )
 
