@@ -1,0 +1,29 @@
+{
+  "replace": {
+    "dt_mode": "replace",
+    "lr": "5e-4",
+    "eff_bs": 64,
+    "phys_bs": 16,
+    "accum": 4,
+    "min_val_mse": 0.751756489276886,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm/imm_clustertrace/replace/lr-5e-4_ebs-64/seed1"
+  },
+  "learned": {
+    "dt_mode": "learned",
+    "lr": "5e-4",
+    "eff_bs": 32,
+    "phys_bs": 32,
+    "accum": 1,
+    "min_val_mse": 0.6920130252838135,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm/imm_clustertrace/learned/lr-5e-4_ebs-32/seed1"
+  },
+  "concat": {
+    "dt_mode": "concat",
+    "lr": "1e-4",
+    "eff_bs": 32,
+    "phys_bs": 32,
+    "accum": 1,
+    "min_val_mse": 0.6934489607810974,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm/imm_clustertrace/concat/lr-1e-4_ebs-32/seed1"
+  }
+}

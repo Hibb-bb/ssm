@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,learned,imm_repohealth,1,257897,27.77,1.001106,0.747554,-1.628239,0.27575,-0.047426,0.598014

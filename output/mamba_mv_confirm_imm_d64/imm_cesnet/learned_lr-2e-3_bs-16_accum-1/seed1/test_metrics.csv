@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,learned,imm_cesnet,1,257897,11.3,0.986011,0.772316,0.016571,0.120232,0.013345,0.132423

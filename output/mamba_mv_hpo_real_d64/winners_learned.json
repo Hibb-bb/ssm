@@ -1,0 +1,16 @@
+{
+  "activity": {
+    "dt_mode": "learned",
+    "lr": "5e-4",
+    "train_batch_size": 128,
+    "min_val_mse": 0.002840581350028515,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_d64/activity/dt-learned_lr-5e-4_bs-128/seed1"
+  },
+  "ushcn": {
+    "dt_mode": "learned",
+    "lr": "5e-4",
+    "train_batch_size": 128,
+    "min_val_mse": 0.6684508323669434,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_d64/ushcn/dt-learned_lr-5e-4_bs-128/seed1"
+  }
+}

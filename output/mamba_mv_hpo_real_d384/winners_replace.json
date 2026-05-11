@@ -1,0 +1,16 @@
+{
+  "activity": {
+    "dt_mode": "replace",
+    "lr": "2e-3",
+    "train_batch_size": 128,
+    "min_val_mse": 0.0028188542928546667,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real/activity/dt-replace_lr-2e-3_bs-128/seed1"
+  },
+  "ushcn": {
+    "dt_mode": "replace",
+    "lr": "5e-4",
+    "train_batch_size": 64,
+    "min_val_mse": 0.6560549139976501,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real/ushcn/dt-replace_lr-5e-4_bs-64/seed1"
+  }
+}

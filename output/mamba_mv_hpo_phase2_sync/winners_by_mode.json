@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "source": "imts_benchmark/scripts/run_mamba_mv_hpo_phase2_local.sh",
+    "regime": "multisin_high_irreg",
+    "selection_metric": "test_mse (lower is better) at seed=1",
+    "data_variant": "phase2_sync",
+    "data_root": "/home/ubuntu/hongyu/ssm/data_correct",
+    "winner_test_mse_at_seed1": {
+      "learned": 0.020662,
+      "replace": 0.011602,
+      "concat":  0.015679
+    }
+  },
+  "learned": {"lr": "2e-3", "train_batch_size": "64"},
+  "replace": {"lr": "2e-3", "train_batch_size": "64"},
+  "concat":  {"lr": "2e-3", "train_batch_size": "64"}
+}

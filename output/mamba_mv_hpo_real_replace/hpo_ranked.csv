@@ -1,0 +1,10 @@
+dataset,dt_mode,lr,train_batch_size,accumulate_grad_batches,effective_batch_size,seed,min_val_mse,cell_dir
+physionet,replace,2e-3,16,4,64,1,0.003093022620305419,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-2e-3_effbs-64/seed1
+physionet,replace,2e-3,16,8,128,1,0.0031343407463282347,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-2e-3_effbs-128/seed1
+physionet,replace,5e-4,16,8,128,1,0.0031944119837135077,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-5e-4_effbs-128/seed1
+physionet,replace,5e-4,16,16,256,1,0.0032062658574432135,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-5e-4_effbs-256/seed1
+physionet,replace,5e-4,16,4,64,1,0.0032469374127686024,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-5e-4_effbs-64/seed1
+physionet,replace,2e-3,16,16,256,1,0.0033244937658309937,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-2e-3_effbs-256/seed1
+physionet,replace,1e-4,16,16,256,1,0.004215399734675884,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-1e-4_effbs-256/seed1
+physionet,replace,1e-4,16,8,128,1,0.004272249061614275,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-1e-4_effbs-128/seed1
+physionet,replace,1e-4,16,4,64,1,0.004356287885457277,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-1e-4_effbs-64/seed1

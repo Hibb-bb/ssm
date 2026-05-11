@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,imm_epa_air,1,7794500,8.78,0.953343,0.777308,1.724212,1.011538,-1.231194,0.097141

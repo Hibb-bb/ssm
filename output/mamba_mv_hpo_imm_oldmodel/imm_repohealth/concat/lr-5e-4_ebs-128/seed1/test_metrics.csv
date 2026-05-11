@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,imm_repohealth,1,7811306,60.5,0.802864,0.645154,0.802864,0.645154,-0.759523,0.285274

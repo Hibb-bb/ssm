@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,concat,imm_clustertrace,1,258409,32.13,1.004573,0.738512,0.094579,0.397776,-29730.344956,0.250849

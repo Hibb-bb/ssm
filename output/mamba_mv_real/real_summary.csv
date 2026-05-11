@@ -1,0 +1,7 @@
+dataset,dt_mode,seed,grid_K,exit_code,wall_sec,output_dir
+activity,replace,1,128,0,1291,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/activity/replace/seed1
+activity,replace,2,128,0,1348,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/activity/replace/seed2
+activity,replace,3,128,0,1349,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/activity/replace/seed3
+activity,replace,4,128,0,1343,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/activity/replace/seed4
+activity,replace,5,128,0,1297,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/activity/replace/seed5
+ushcn,replace,1,128,0,1553,/home/ubuntu/hongyu/ssm/output/mamba_mv_real/ushcn/replace/seed1

@@ -1,0 +1,16 @@
+{
+  "activity": {
+    "dt_mode": "concat",
+    "lr": "2e-3",
+    "train_batch_size": 128,
+    "min_val_mse": 0.0029149027541279793,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_d64/activity/dt-concat_lr-2e-3_bs-128/seed1"
+  },
+  "ushcn": {
+    "dt_mode": "concat",
+    "lr": "1e-4",
+    "train_batch_size": 128,
+    "min_val_mse": 0.664904773235321,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_d64/ushcn/dt-concat_lr-1e-4_bs-128/seed1"
+  }
+}

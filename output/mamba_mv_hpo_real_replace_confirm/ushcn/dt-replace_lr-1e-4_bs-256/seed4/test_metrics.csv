@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy,test_retest_wall_sec
+mamba_mv,replace,ushcn,4,7794997,995.85,0.518386,0.338607,0.365878,0.523849,-249683323.810207,0.557157,9.87

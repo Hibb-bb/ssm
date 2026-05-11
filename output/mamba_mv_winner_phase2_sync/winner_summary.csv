@@ -1,0 +1,16 @@
+dt_mode,lr,train_batch_size,seed,regime,exit_code,wall_sec,output_dir
+learned,2e-3,64,1,multisin_high_irreg,0,187,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-learned_lr-2e-3_bs-64/seed1
+learned,2e-3,64,2,multisin_high_irreg,0,191,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-learned_lr-2e-3_bs-64/seed2
+learned,2e-3,64,3,multisin_high_irreg,0,336,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-learned_lr-2e-3_bs-64/seed3
+learned,2e-3,64,4,multisin_high_irreg,0,200,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-learned_lr-2e-3_bs-64/seed4
+learned,2e-3,64,5,multisin_high_irreg,0,184,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-learned_lr-2e-3_bs-64/seed5
+replace,2e-3,64,1,multisin_high_irreg,0,208,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-replace_lr-2e-3_bs-64/seed1
+replace,2e-3,64,2,multisin_high_irreg,0,230,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-replace_lr-2e-3_bs-64/seed2
+replace,2e-3,64,3,multisin_high_irreg,0,204,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-replace_lr-2e-3_bs-64/seed3
+replace,2e-3,64,4,multisin_high_irreg,0,198,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-replace_lr-2e-3_bs-64/seed4
+replace,2e-3,64,5,multisin_high_irreg,0,336,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-replace_lr-2e-3_bs-64/seed5
+concat,2e-3,64,1,multisin_high_irreg,0,341,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-concat_lr-2e-3_bs-64/seed1
+concat,2e-3,64,2,multisin_high_irreg,0,192,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-concat_lr-2e-3_bs-64/seed2
+concat,2e-3,64,3,multisin_high_irreg,0,196,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-concat_lr-2e-3_bs-64/seed3
+concat,2e-3,64,4,multisin_high_irreg,0,195,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-concat_lr-2e-3_bs-64/seed4
+concat,2e-3,64,5,multisin_high_irreg,0,170,/home/ubuntu/hongyu/ssm/output/mamba_mv_winner_phase2_sync/multisin_high_irreg/dt-concat_lr-2e-3_bs-64/seed5

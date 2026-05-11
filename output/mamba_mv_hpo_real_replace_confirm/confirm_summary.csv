@@ -1,0 +1,12 @@
+dataset,dt_mode,lr,bs,seed,patience,exit_code,wall_sec,output_dir
+activity,replace,2e-3,128,1,25,0,1042,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/activity/dt-replace_lr-2e-3_bs-128/seed1
+activity,replace,2e-3,128,2,25,0,1670,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/activity/dt-replace_lr-2e-3_bs-128/seed2
+activity,replace,2e-3,128,3,25,0,985,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/activity/dt-replace_lr-2e-3_bs-128/seed3
+activity,replace,2e-3,128,4,25,0,1023,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/activity/dt-replace_lr-2e-3_bs-128/seed4
+activity,replace,2e-3,128,5,25,0,998,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/activity/dt-replace_lr-2e-3_bs-128/seed5
+ushcn,replace,1e-4,256,1,25,0,934,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/ushcn/dt-replace_lr-1e-4_bs-256/seed1
+ushcn,replace,1e-4,256,2,25,0,1010,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/ushcn/dt-replace_lr-1e-4_bs-256/seed2
+ushcn,replace,1e-4,256,3,25,0,1087,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/ushcn/dt-replace_lr-1e-4_bs-256/seed3
+ushcn,replace,1e-4,256,4,25,0,1014,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/ushcn/dt-replace_lr-1e-4_bs-256/seed4
+ushcn,replace,1e-4,256,5,25,0,989,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/ushcn/dt-replace_lr-1e-4_bs-256/seed5
+physionet,replace,2e-3,16,4,64,1,25,0,6151,/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace_confirm/physionet/dt-replace_lr-2e-3_effbs-64/seed1

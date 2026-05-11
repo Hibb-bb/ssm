@@ -1,0 +1,2 @@
+dataset,dt_mode,lr,bs,grid_K,seed,exit_code,wall_sec,output_dir
+activity,replace,2e-3,128,128,1,0,707,/home/ubuntu/hongyu/ssm/output/mamba_mv_confirm_real/activity/replace_lr-2e-3_bs-128/seed1

@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,replace,imm_ilinet,3,258025,11.63,1.428658,0.82209,-0.475208,0.127672,-0.386174,0.274223

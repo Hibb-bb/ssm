@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,learned,ushcn,3,259877,233.1,0.511607,0.322845,0.505823,0.321511,0.374292,0.532666

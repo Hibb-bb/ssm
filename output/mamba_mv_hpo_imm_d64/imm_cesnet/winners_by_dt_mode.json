@@ -1,0 +1,29 @@
+{
+  "replace": {
+    "dt_mode": "replace",
+    "lr": "2e-3",
+    "eff_bs": 16,
+    "phys_bs": 16,
+    "accum": 1,
+    "min_val_mse": 0.9981380105018616,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm_d64/imm_cesnet/replace/lr-2e-3_ebs-16/seed1"
+  },
+  "learned": {
+    "dt_mode": "learned",
+    "lr": "2e-3",
+    "eff_bs": 16,
+    "phys_bs": 16,
+    "accum": 1,
+    "min_val_mse": 1.0044374465942383,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm_d64/imm_cesnet/learned/lr-2e-3_ebs-16/seed1"
+  },
+  "concat": {
+    "dt_mode": "concat",
+    "lr": "5e-4",
+    "eff_bs": 8,
+    "phys_bs": 8,
+    "accum": 1,
+    "min_val_mse": 0.998090386390686,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_imm_d64/imm_cesnet/concat/lr-5e-4_ebs-8/seed1"
+  }
+}

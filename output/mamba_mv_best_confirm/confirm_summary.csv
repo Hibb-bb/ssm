@@ -1,0 +1,6 @@
+dt_mode,lr,train_batch_size,seed,regime,exit_code,wall_sec,output_dir
+replace,2e-3,64,1,multisin_high_irreg,0,189,/home/ubuntu/hongyu/ssm/output/mamba_mv_best_confirm/multisin_high_irreg/dt-replace_lr-2e-3_bs-64_seed-1
+replace,2e-3,64,2,multisin_high_irreg,0,208,/home/ubuntu/hongyu/ssm/output/mamba_mv_best_confirm/multisin_high_irreg/dt-replace_lr-2e-3_bs-64_seed-2
+replace,2e-3,64,3,multisin_high_irreg,0,214,/home/ubuntu/hongyu/ssm/output/mamba_mv_best_confirm/multisin_high_irreg/dt-replace_lr-2e-3_bs-64_seed-3
+replace,2e-3,64,4,multisin_high_irreg,0,181,/home/ubuntu/hongyu/ssm/output/mamba_mv_best_confirm/multisin_high_irreg/dt-replace_lr-2e-3_bs-64_seed-4
+replace,2e-3,64,5,multisin_high_irreg,0,204,/home/ubuntu/hongyu/ssm/output/mamba_mv_best_confirm/multisin_high_irreg/dt-replace_lr-2e-3_bs-64_seed-5

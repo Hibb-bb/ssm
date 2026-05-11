@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,imm_clustertrace,1,7814107,114.97,1.092631,0.780617,1.038056,0.75135,-0.076167,0.419391

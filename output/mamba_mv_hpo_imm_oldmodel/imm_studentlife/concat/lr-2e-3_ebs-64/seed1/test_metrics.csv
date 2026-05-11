@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,imm_studentlife,1,7808505,91.93,0.787188,0.649826,0.906672,0.686805,0.025615,0.267176

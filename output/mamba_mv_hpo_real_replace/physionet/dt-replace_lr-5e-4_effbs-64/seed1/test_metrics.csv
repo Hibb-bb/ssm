@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,replace,physionet,1,7895833,3745.33,0.003237,0.032677,-236.371075,0.538937,0.934498,0.969647

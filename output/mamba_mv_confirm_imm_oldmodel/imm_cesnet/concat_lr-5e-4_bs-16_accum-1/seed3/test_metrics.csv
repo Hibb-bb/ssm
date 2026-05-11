@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,imm_cesnet,3,7811306,10.34,1.020899,0.79237,1.020899,0.79237,-0.019969,-0.002113

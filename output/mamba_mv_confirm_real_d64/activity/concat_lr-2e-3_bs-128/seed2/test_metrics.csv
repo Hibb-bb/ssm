@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_mse_tpg,test_mae_tpg,test_r2,test_pearson
+mamba_mv,concat,activity,2,263628,210.71,0.002847,0.033543,0.002853,0.0336,0.719597,0.842478

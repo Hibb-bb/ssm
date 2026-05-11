@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson
+mamba_mv,replace,multisin_high_irreg,1,7789395,212.71,0.025932,0.120546,0.405789,0.63433

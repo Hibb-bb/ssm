@@ -1,0 +1,11 @@
+{
+  "physionet": {
+    "dt_mode": "replace",
+    "lr": "2e-3",
+    "train_batch_size": 16,
+    "accumulate_grad_batches": 4,
+    "effective_batch_size": 64,
+    "min_val_mse": 0.003093022620305419,
+    "source_cell_dir": "/home/ubuntu/hongyu/ssm/output/mamba_mv_hpo_real_replace/physionet/dt-replace_lr-2e-3_effbs-64/seed1"
+  }
+}

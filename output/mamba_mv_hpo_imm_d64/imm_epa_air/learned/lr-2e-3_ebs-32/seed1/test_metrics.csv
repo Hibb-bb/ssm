@@ -1,0 +1,2 @@
+model,variant,regime,seed,n_params,wall_fit_sec,test_mse,test_mae,test_r2,test_pearson,test_r2_per_sample_legacy,test_pearson_per_sample_legacy
+mamba_mv,learned,imm_epa_air,1,257129,4.23,0.568341,0.587828,-1.153953,-0.18826,-1.329263,0.083356
